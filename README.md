@@ -1,4 +1,6 @@
-# Coding-agent hook (TypeScript) — token usage and cost as OTel GenAI traces
+# Coding Agent Telemetry Exporter
+
+Token usage and cost as OTel GenAI traces (TypeScript).
 
 **Supported agents: Codex CLI / Claude Code**
 
