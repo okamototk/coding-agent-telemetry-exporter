@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["es2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    "rootDir": "src",
+    "outDir": "dist",
+    "sourceMap": true,
+
+    // Sources import as `./env.ts`. Node 23.6+ runs that as-is, and tsc rewrites it to
+    // `./env.js` at build time.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true,
+    // Ban enum / namespace / parameter properties, keeping to syntax that Node's type
+    // stripping runs as-is.
+    "erasableSyntaxOnly": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts"]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "agent-otel-genai-hook",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A coding-agent hook that exports token usage and cost as OTel GenAI traces (supports Codex CLI and Claude Code)",
+  "type": "module",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/*.test.ts",
+    "test:dist": "npm run build && node --test dist/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}

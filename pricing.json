@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "Rates in USD per 1M tokens, keyed by the model name the agent reports.",
+    "cached_input applies to the cached_input_tokens share of input_tokens.",
+    "cache_creation_5m / cache_creation_1h are Claude's prompt cache write rates.",
+    "Keys resolve by exact match, then longest prefix match, then default.",
+    "Rates change: in production, point CAT_OTEL_PRICING_FILE at your own table."
+  ],
+  "currency": "USD",
+  "default": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
+  "per_million_tokens": {
+    "claude-opus": {
+      "input": 5.0,
+      "cached_input": 0.5,
+      "cache_creation_5m": 6.25,
+      "cache_creation_1h": 10.0,
+      "output": 25.0
+    },
+    "claude-sonnet": {
+      "input": 3.0,
+      "cached_input": 0.3,
+      "cache_creation_5m": 3.75,
+      "cache_creation_1h": 6.0,
+      "output": 15.0
+    },
+    "claude-haiku": {
+      "input": 0.8,
+      "cached_input": 0.08,
+      "cache_creation_5m": 1.0,
+      "cache_creation_1h": 1.6,
+      "output": 4.0
+    },
+    "gpt-5.1-codex-max": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
+    "gpt-5.1-codex-mini": { "input": 0.25, "cached_input": 0.025, "output": 2.0 },
+    "gpt-5.1-codex": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
+    "gpt-5.1": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
+    "gpt-5-codex": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
+    "gpt-5-mini": { "input": 0.25, "cached_input": 0.025, "output": 2.0 },
+    "gpt-5-nano": { "input": 0.05, "cached_input": 0.005, "output": 0.4 },
+    "gpt-5": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
+    "gpt-4.1-mini": { "input": 0.4, "cached_input": 0.1, "output": 1.6 },
+    "gpt-4.1": { "input": 2.0, "cached_input": 0.5, "output": 8.0 },
+    "o4-mini": { "input": 1.1, "cached_input": 0.275, "output": 4.4 },
+    "o3-mini": { "input": 1.1, "cached_input": 0.55, "output": 4.4 },
+    "o3": { "input": 2.0, "cached_input": 0.5, "output": 8.0 }
+  }
+}
