@@ -204,7 +204,7 @@ Spans go to http://localhost:4318/v1/traces by default. Common settings:
 Optional — tag every span and metric with who ran the session. The keys land in the
 OTLP resource, which both /v1/traces and /v1/metrics carry:
 
-  export OTEL_RESOURCE_ATTRIBUTES="user.email=\$(git config user.email),enduser.id=\$(whoami)"
+  export CAT_OTEL_RESOURCE_ATTRIBUTES="user.email=\$(git config user.email),enduser.id=\$(whoami)"
 
 This sends personal data to the Collector, so enable it only if your retention policy
 allows it.
