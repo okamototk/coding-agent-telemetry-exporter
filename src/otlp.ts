@@ -7,7 +7,7 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 
-import { debug, env, kvList, tracesUrl } from "./env.ts";
+import { debug, env, extraResourceAttributes, kvList, tracesUrl } from "./env.ts";
 
 export const SCOPE_NAME = "agent.otel.genai.hook";
 export const SCOPE_VERSION = "1.0.0";
@@ -173,13 +173,7 @@ export function resourceAttributes(serviceName: string): Attr[] {
     ["telemetry.sdk.name", SCOPE_NAME],
     ["telemetry.sdk.language", "nodejs"],
   ];
-  const extra = kvList(
-    env([
-      "CAT_OTEL_RESOURCE_ATTRIBUTES",
-      "OTEL_RESOURCE_ATTRIBUTES",
-    ]),
-  );
-  for (const [key, value] of Object.entries(extra)) {
+  for (const [key, value] of Object.entries(extraResourceAttributes())) {
     pairs.push([key, value]);
   }
   return attrs(pairs);

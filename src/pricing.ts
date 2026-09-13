@@ -24,12 +24,22 @@ export interface Pricing {
 
 export interface CostBreakdown {
   uncachedInputTokens: number;
+  /** The whole input side: uncached input, cache reads, and cache writes. */
   inputCost: number;
   outputCost: number;
   totalCost: number;
   currency: string;
   /** false signals the model was not in the table and `default` rates were used. */
   pricingMatched: boolean;
+  /**
+   * The input side split by cost class. These three plus {@link outputCost} add up to
+   * {@link totalCost}, which is what the per-class breakdown proposed in
+   * https://github.com/open-telemetry/semantic-conventions-genai/issues/484 needs (see
+   * spans.ts for how they are emitted).
+   */
+  inputTokenCost: number;
+  cacheReadCost: number;
+  cacheWriteCost: number;
 }
 
 const FALLBACK_PRICING: Pricing = {
@@ -124,5 +134,8 @@ export function cost(usage: Usage, model: string | null | undefined, pricing: Pr
     totalCost: inputCost + cachedCost + creationCost + outputCost,
     currency: pricing.currency || "USD",
     pricingMatched: matched,
+    inputTokenCost: inputCost,
+    cacheReadCost: cachedCost,
+    cacheWriteCost: creationCost,
   };
 }

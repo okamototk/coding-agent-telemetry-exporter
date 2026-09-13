@@ -361,8 +361,13 @@ async function collect(extra: NodeJS.ProcessEnv = {}): Promise<Collected> {
   const workdir = mkdtempSync(join(tmpdir(), "codex-otel-hook-"));
   try {
     const rollout = join(workdir, `rollout-2026-08-25T01-00-00-${SESSION_ID}.jsonl`);
+    // A CAT_OTEL_* left in the developer's own shell would otherwise change what the hook
+    // emits, so the fixture starts from an environment with none of them set.
+    const inherited = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith("CAT_OTEL_")),
+    );
     const environment: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...inherited,
       CAT_OTEL_ENDPOINT: endpoint,
       CAT_OTEL_STATE_DIR: join(workdir, "state"),
       CAT_OTEL_CAPTURE_PROMPTS: "1",
@@ -558,10 +563,75 @@ test("tokens and cost for the first request", () => {
   );
   assert.equal(attributes["codex.usage.cost.currency"], "USD");
   assert.equal(attributes["codex.usage.cost.pricing_matched"], true);
-  // gen_ai.* is OTel's namespace; no custom attributes go there.
+  // gen_ai.* is OTel's namespace; a custom attribute goes there only when semconv (here, an
+  // accepted draft) defines it, which is why the bare gen_ai.usage.cost is still absent.
   assert.equal("gen_ai.usage.cost" in attributes, false);
   assert.equal("gen_ai.usage.total_tokens" in attributes, false);
   assert.equal("gen_ai.system" in attributes, false);
+});
+
+test("the cost attributes of semconv-genai PR #443 ride on the chat span", () => {
+  const first = byStart("chat")[0];
+  assert.ok(first);
+  const attributes = flatten(first.attributes);
+  const expected = (2_000 * 1.25 + 8_000 * 0.125 + 500 * 10.0) / 1_000_000;
+  assert.ok(Math.abs(Number(attributes["gen_ai.usage.cost.amount"]) - expected) < 1e-9);
+  // Conditionally Required whenever the amount is set.
+  assert.equal(attributes["gen_ai.usage.cost.currency"], "USD");
+  // The hook computes cost from pricing.json, so it is never the provider's own figure.
+  assert.equal(attributes["gen_ai.usage.cost.source"], "local");
+  // The extensions stay alongside the draft names, so nothing is lost if the draft changes.
+  assert.ok(Math.abs(Number(attributes["codex.usage.cost"]) - expected) < 1e-9);
+  // The per-class breakdown is opt-in.
+  assert.equal("gen_ai.usage.cost.input" in attributes, false);
+  assert.equal("gen_ai.usage.cost.cache_read" in attributes, false);
+});
+
+test("the turn span reports no gen_ai cost: the draft excludes children's cost", () => {
+  for (const turn of group("invoke_agent")) {
+    const attributes = flatten(turn.attributes);
+    // A turn's cost is the sum of its child chat spans, which the draft says this attribute
+    // must not include. The sum remains available as the extension attribute.
+    assert.equal("gen_ai.usage.cost.amount" in attributes, false);
+    assert.equal("gen_ai.usage.cost.currency" in attributes, false);
+    assert.equal("gen_ai.usage.cost.source" in attributes, false);
+    assert.ok(Number(attributes["codex.usage.cost"]) > 0);
+  }
+});
+
+test("CAT_OTEL_COST_BREAKDOWN=1 adds the per-class breakdown of issue #484", async () => {
+  const broken = await collect({ CAT_OTEL_COST_BREAKDOWN: "1" });
+  const first = sortByStart(broken.spans.get("chat") ?? [])[0];
+  assert.ok(first);
+  const attributes = flatten(first.attributes);
+  const classes = {
+    "gen_ai.usage.cost.input": (2_000 * 1.25) / 1_000_000,
+    "gen_ai.usage.cost.cache_read": (8_000 * 0.125) / 1_000_000,
+    "gen_ai.usage.cost.cache_write": 0,
+    "gen_ai.usage.cost.output": (500 * 10.0) / 1_000_000,
+  };
+  for (const [key, value] of Object.entries(classes)) {
+    assert.ok(Math.abs(Number(attributes[key]) - value) < 1e-9, `${key}=${attributes[key]}`);
+  }
+  // The classes are additive: they add up to the amount rather than overlapping it.
+  const sum = Object.values(classes).reduce((total, item) => total + item, 0);
+  assert.ok(Math.abs(Number(attributes["gen_ai.usage.cost.amount"]) - sum) < 1e-9);
+});
+
+test("CAT_OTEL_COST_SEMCONV=0 drops the draft names but keeps the extensions", async () => {
+  const off = await collect({ CAT_OTEL_COST_SEMCONV: "0" });
+  const first = sortByStart(off.spans.get("chat") ?? [])[0];
+  assert.ok(first);
+  const attributes = flatten(first.attributes);
+  assert.equal("gen_ai.usage.cost.amount" in attributes, false);
+  assert.equal("gen_ai.usage.cost.currency" in attributes, false);
+  assert.equal("gen_ai.usage.cost.source" in attributes, false);
+  assert.ok(Number(attributes["codex.usage.cost"]) > 0);
+  assert.equal(attributes["codex.usage.cost.currency"], "USD");
+  // The metric goes with them; the other metrics keep flowing.
+  const names = new Set(off.metrics.map((item) => item.name));
+  assert.equal(names.has("gen_ai.client.operation.cost"), false);
+  assert.equal(names.has("gen_ai.client.operation.duration"), true);
 });
 
 test("attributes in the registry use gen_ai.* rather than a custom name", () => {
@@ -702,6 +772,12 @@ test("MESSAGES_MODE=event moves every event-defined attribute, not just content,
   assert.equal(attributes["gen_ai.conversation.id"], SESSION_ID);
   assert.equal(attributes["gen_ai.request.model"], MODEL);
 
+  // The draft defines its cost attributes on the event as well, so they move with the rest.
+  assert.ok(Number(event["gen_ai.usage.cost.amount"]) > 0);
+  assert.equal(event["gen_ai.usage.cost.currency"], "USD");
+  assert.equal(event["gen_ai.usage.cost.source"], "local");
+  assert.equal("gen_ai.usage.cost.amount" in attributes, false);
+
   // Extensions absent from semconv (cost and custom attributes) remain span attributes.
   assert.equal(attributes["codex.usage.cost.currency"], "USD");
   assert.ok(Number(attributes["codex.usage.cost"]) > 0);
@@ -814,6 +890,7 @@ test("sends the semconv GenAI metrics to /v1/metrics", () => {
   assert.deepEqual(
     [...names].sort(),
     [
+      "gen_ai.client.operation.cost",
       "gen_ai.client.operation.duration",
       "gen_ai.client.token.usage",
       "gen_ai.execute_tool.duration",
@@ -828,6 +905,8 @@ test("sends the semconv GenAI metrics to /v1/metrics", () => {
   const units = new Map(metrics.map((item) => [item.name, item.unit]));
   assert.equal(units.get("gen_ai.client.token.usage"), "{token}");
   assert.equal(units.get("gen_ai.client.operation.duration"), "s");
+  // The draft carries the currency in an attribute, so the unit is the unitless {cost}.
+  assert.equal(units.get("gen_ai.client.operation.cost"), "{cost}");
   assert.equal(units.get("gen_ai.invoke_agent.inference_calls"), "{inference_call}");
   assert.equal(units.get("gen_ai.invoke_agent.tool_calls"), "{tool_call}");
   for (const metric of metrics) {
@@ -863,6 +942,25 @@ test("gen_ai.client.token.usage reports input and output separately", () => {
   assert.equal(attributes["gen_ai.provider.name"], "openai");
   assert.equal(attributes["gen_ai.request.model"], MODEL);
   assert.equal(attributes["gen_ai.response.model"], MODEL);
+});
+
+test("gen_ai.client.operation.cost reports one point per request", () => {
+  const cost = totals("gen_ai.client.operation.cost");
+  // The same two requests as the token metric.
+  assert.equal(cost.count, 2);
+  const first = (2_000 * 1.25 + 8_000 * 0.125 + 500 * 10.0) / 1_000_000;
+  const second = (3_000 * 1.25 + 9_000 * 0.125 + 200 * 10.0) / 1_000_000;
+  assert.ok(Math.abs(cost.sum - (first + second)) < 1e-9, String(cost.sum));
+
+  const point = dataPoints("gen_ai.client.operation.cost")[0];
+  assert.ok(point);
+  const attributes = flatten(point.attributes);
+  assert.equal(attributes["gen_ai.operation.name"], "chat");
+  assert.equal(attributes["gen_ai.provider.name"], "openai");
+  assert.equal(attributes["gen_ai.request.model"], MODEL);
+  // Required on this metric in the draft: the amount is meaningless without it.
+  assert.equal(attributes["gen_ai.usage.cost.currency"], "USD");
+  assert.equal(attributes["gen_ai.usage.cost.source"], "local");
 });
 
 test("metric attributes carry no high-cardinality identifiers", () => {
@@ -923,4 +1021,52 @@ test("resource attributes", () => {
   const resource = flatten(first.resourceSpans[0]!.resource.attributes);
   assert.equal(resource["service.name"], "codex-test");
   assert.equal(resource["deployment.environment.name"], "test");
+});
+
+/** The resource attributes of every /v1/metrics delivery. */
+function metricResources(from: readonly Delivery[]): Attributes[] {
+  return from
+    .filter((item) => "resourceMetrics" in item.body)
+    .flatMap((item) =>
+      (item.body as unknown as OtlpMetricEnvelope).resourceMetrics.map((resourceMetric) =>
+        flatten(resourceMetric.resource.attributes),
+      ),
+    );
+}
+
+test("the configured resource attributes reach the metric data points", () => {
+  const resources = metricResources(deliveries);
+  assert.ok(resources.length > 0);
+  for (const resource of resources) {
+    assert.equal(resource["service.name"], "codex-test");
+    assert.equal(resource["deployment.environment.name"], "test");
+  }
+  // A backend that ignores resource attributes on metrics can still group by them only if
+  // they are on the data points too.
+  for (const metric of metrics) {
+    for (const point of metric.histogram.dataPoints) {
+      assert.equal(
+        flatten(point.attributes)["deployment.environment.name"],
+        "test",
+        `${metric.name} lost the resource attribute`,
+      );
+    }
+  }
+});
+
+test("CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=0 keeps them off the data points", async () => {
+  const off = await collect({ CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES: "0" });
+  assert.ok(off.metrics.length > 0);
+  for (const metric of off.metrics) {
+    for (const point of metric.histogram.dataPoints) {
+      assert.ok(
+        !("deployment.environment.name" in flatten(point.attributes)),
+        `${metric.name} carries the resource attribute`,
+      );
+    }
+  }
+  // Only the data points lose them; the resource still carries them.
+  for (const resource of metricResources(off.deliveries)) {
+    assert.equal(resource["deployment.environment.name"], "test");
+  }
 });

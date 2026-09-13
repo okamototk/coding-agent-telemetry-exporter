@@ -185,6 +185,13 @@ test("folds the Claude transcript, cache usage, tools, and subagents into one tu
 
   const previous = { ...process.env };
   try {
+    // Same reason as in otel-genai-hook.test.ts: an ambient CAT_OTEL_* would change what the
+    // hook emits, so the run starts from an environment with none of them set.
+    for (const name of Object.keys(process.env)) {
+      if (name.startsWith("CAT_OTEL_")) {
+        delete process.env[name];
+      }
+    }
     process.env["CAT_OTEL_ENDPOINT"] = `http://127.0.0.1:${address.port}`;
     process.env["CAT_OTEL_STATE_DIR"] = join(workdir, "state");
     process.env["CAT_OTEL_CAPTURE_PROMPTS"] = "1";

@@ -18,12 +18,16 @@ export function env(names: readonly string[], fallback = ""): string {
   return fallback;
 }
 
+function truthy(raw: string): boolean {
+  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+}
+
 export function flag(name: string, fallback = false): boolean {
   const raw = process.env[name];
   if (raw === undefined || raw === "") {
     return fallback;
   }
-  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+  return truthy(raw);
 }
 
 export function numberEnv(name: string, fallback: number): number {
@@ -68,6 +72,25 @@ export function kvList(raw: string): Record<string, string> {
     }
   }
   return out;
+}
+
+/** The operator-supplied resource attributes, as a `k=v` map. */
+export function extraResourceAttributes(): Record<string, string> {
+  return kvList(env(["CAT_OTEL_RESOURCE_ATTRIBUTES", "OTEL_RESOURCE_ATTRIBUTES"]));
+}
+
+/**
+ * Whether {@link extraResourceAttributes} is also copied onto every metric data point.
+ * Default on, like the standard `OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES` it also reads:
+ * a backend that ignores resource attributes on metrics can still group by them, at the
+ * cost of multiplying the time series by their cardinality.
+ */
+export function metricsIncludeResourceAttributes(): boolean {
+  const raw = env([
+    "CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES",
+    "OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES",
+  ]);
+  return raw === "" ? true : truthy(raw);
 }
 
 export function codexHome(): string {
