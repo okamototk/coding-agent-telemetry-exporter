@@ -6,7 +6,8 @@
  * observed is sent, with **Delta** temporality (cumulative is impossible without keeping
  * the previous value).
  *
- * Attributes are limited to those semconv defines for each metric. High-cardinality
+ * Attributes are limited to those semconv defines for each metric, plus the resource
+ * attributes the operator configured (see {@link customAttributes}). High-cardinality
  * identifiers such as session.id and turn.id stay on the spans only; putting them on
  * metrics would explode the time series beyond what a backend can hold.
  *
@@ -14,6 +15,7 @@
  *
  *     gen_ai.client.token.usage           two points per chat span: input and output
  *     gen_ai.client.operation.duration    chat span duration
+ *     gen_ai.client.operation.cost        chat span cost (from an unmerged draft, see below)
  *     gen_ai.invoke_agent.duration        turn span duration
  *     gen_ai.invoke_agent.inference_calls LLM requests in that turn
  *     gen_ai.invoke_agent.tool_calls      tool calls in that turn
@@ -21,11 +23,14 @@
  *
  * The rest of semconv cannot be produced in principle: the rollout has no per-chunk
  * timestamps for time_to_first_chunk / time_per_output_chunk, gen_ai.server.* is measured
- * server-side, and the CLI has no concept matching gen_ai.invoke_workflow.duration. Cost
- * has no semconv metric, so it remains an extension on the span attributes.
+ * server-side, and the CLI has no concept matching gen_ai.invoke_workflow.duration.
  */
 
-import { metricsUrl } from "./env.ts";
+import {
+  extraResourceAttributes,
+  metricsIncludeResourceAttributes,
+  metricsUrl,
+} from "./env.ts";
 import {
   attrs,
   postOtlp,
@@ -35,6 +40,7 @@ import {
   type Attr,
   type AttrValue,
 } from "./otlp.ts";
+import { COST_SOURCE_LOCAL, costSemconv } from "./spans.ts";
 
 type MetricPair = readonly [string, AttrValue];
 
@@ -76,6 +82,29 @@ const OPERATION_DURATION: Instrument = {
   unit: "s",
   description: "GenAI operation duration.",
   bounds: SECONDS_BOUNDS,
+};
+
+/**
+ * Boundaries for one request's cost. semconv proposes no ExplicitBucketBoundaries for this
+ * metric, so these are chosen for the range a single coding-agent request falls in: a
+ * fraction of a cent up to a few dollars.
+ */
+const COST_BOUNDS = [
+  0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
+] as const;
+
+/**
+ * From the unmerged draft
+ * https://github.com/open-telemetry/semantic-conventions-genai/pull/443, which defines this
+ * as a histogram with unit `{cost}` and a double value, the currency carried as an attribute
+ * rather than in the unit. It is emitted for the chat spans only, whose cost is the cost of
+ * their own operation; see costAttrs in spans.ts for why the turn span is left out.
+ */
+const OPERATION_COST: Instrument = {
+  name: "gen_ai.client.operation.cost",
+  unit: "{cost}",
+  description: "Monetary cost of a single GenAI client operation.",
+  bounds: COST_BOUNDS,
 };
 
 const AGENT_DURATION: Instrument = {
@@ -201,6 +230,10 @@ export interface ChatMeasurement {
   outputTokens: number;
   startNs: bigint;
   endNs: bigint;
+  /** The request's cost. A zero or negative amount is treated as undetermined and dropped. */
+  cost: number;
+  /** ISO 4217 code, required by the draft alongside the amount. */
+  currency: string;
 }
 
 export function recordChat(store: MetricStore, chat: ChatMeasurement): void {
@@ -231,6 +264,22 @@ export function recordChat(store: MetricStore, chat: ChatMeasurement): void {
     chat.startNs,
     chat.endNs,
   );
+  // The draft requires the currency on every data point and forbids reporting a cost that
+  // cannot be determined, which here means an amount that no rate produced.
+  if (costSemconv() && chat.cost > 0 && chat.currency) {
+    record(
+      store,
+      OPERATION_COST,
+      chat.cost,
+      [
+        ...common,
+        ["gen_ai.usage.cost.currency", chat.currency],
+        ["gen_ai.usage.cost.source", COST_SOURCE_LOCAL],
+      ],
+      chat.startNs,
+      chat.endNs,
+    );
+  }
 }
 
 /** Measurements for one turn (one invoke_agent span). */
@@ -308,9 +357,34 @@ export interface OtlpMetric {
   };
 }
 
+/**
+ * The operator-supplied resource attributes, as data point attributes. Whether a backend
+ * promotes resource attributes to metric tags is backend-specific, so what
+ * `CAT_OTEL_RESOURCE_ATTRIBUTES` / `OTEL_RESOURCE_ATTRIBUTES` lists is copied onto every
+ * data point as well. Their cardinality is the operator's own choice, unlike the
+ * identifiers this module keeps off the metrics; opt out with
+ * `CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=0`.
+ */
+function customAttributes(): Attr[] {
+  if (!metricsIncludeResourceAttributes()) {
+    return [];
+  }
+  return attrs(Object.entries(extraResourceAttributes()));
+}
+
+/** A semconv attribute on the data point wins over a custom one of the same name. */
+function withCustom(attributes: Attr[], custom: Attr[]): Attr[] {
+  if (custom.length === 0) {
+    return attributes;
+  }
+  const present = new Set(attributes.map((item) => item.key));
+  return [...attributes, ...custom.filter((item) => !present.has(item.key))];
+}
+
 /** Turns the accumulated measurements into an OTLP metrics array. */
 export function metricPayload(store: MetricStore): OtlpMetric[] {
   const byName = new Map<string, OtlpMetric>();
+  const custom = customAttributes();
   for (const point of store.points.values()) {
     let metric = byName.get(point.instrument.name);
     if (!metric) {
@@ -331,7 +405,7 @@ export function metricPayload(store: MetricStore): OtlpMetric[] {
       max: point.maximum,
       bucketCounts: point.buckets.map(String),
       explicitBounds: [...point.instrument.bounds],
-      attributes: point.attributes,
+      attributes: withCustom(point.attributes, custom),
     });
   }
   return [...byName.values()];

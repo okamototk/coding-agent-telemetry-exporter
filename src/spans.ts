@@ -1,6 +1,6 @@
 /** Builds span attributes. All mapping onto the GenAI semconv lives here. */
 
-import { env } from "./env.ts";
+import { env, flag } from "./env.ts";
 import { attrs, double, structuredAttr, type Attr, type AttrValue, type SpanEvent } from "./otlp.ts";
 import type { CostBreakdown } from "./pricing.ts";
 import type { AgentRuntime, GenAiMessage, HookPayload, HookState, Usage } from "./types.ts";
@@ -55,6 +55,11 @@ const EVENT_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set([
   "gen_ai.usage.audio.output_tokens",
   "gen_ai.usage.cache_read.input_tokens",
   "gen_ai.usage.cache_write.input_tokens",
+  // Draft, from PR #443 (see COST_ATTRIBUTES_PR below): the PR adds the cost attributes to
+  // the inference span and to this event alike, so they are routed like the token counts.
+  "gen_ai.usage.cost.amount",
+  "gen_ai.usage.cost.currency",
+  "gen_ai.usage.cost.source",
   "gen_ai.usage.image.cache_read.input_tokens",
   "gen_ai.usage.image.input_tokens",
   "gen_ai.usage.image.output_tokens",
@@ -341,6 +346,75 @@ export function commonAttrs(
  */
 export type UsageScope = "inference" | "agent";
 
+/**
+ * The draft that defines cost in semconv. **Not merged**: everything below built on it is an
+ * implementation of a draft and may change with it.
+ *
+ * https://github.com/open-telemetry/semantic-conventions-genai/pull/443
+ */
+export const COST_ATTRIBUTES_PR =
+  "https://github.com/open-telemetry/semantic-conventions-genai/pull/443";
+
+/** The per-class cost breakdown follow-up. Also unmerged, and with its enum still open. */
+export const COST_BREAKDOWN_ISSUE =
+  "https://github.com/open-telemetry/semantic-conventions-genai/issues/484";
+
+/**
+ * `gen_ai.usage.cost.source`. The draft applies a receive-vs-derive test: `provider` when
+ * the amount came back in the response, `local` when the emitting component computed it.
+ * Neither Codex's rollout nor Claude Code's transcript reports a charged amount, so this
+ * hook always derives it from pricing.json and is therefore always `local`.
+ */
+export const COST_SOURCE_LOCAL = "local";
+
+/** Whether to emit the draft `gen_ai.usage.cost.*` attributes and the cost metric. */
+export function costSemconv(): boolean {
+  return flag("CAT_OTEL_COST_SEMCONV", true);
+}
+
+/** Whether to also emit the per-class breakdown of {@link COST_BREAKDOWN_ISSUE}. */
+export function costBreakdown(): boolean {
+  return flag("CAT_OTEL_COST_BREAKDOWN", false);
+}
+
+/**
+ * The draft cost attributes for one operation, or [] when there is no cost to report.
+ *
+ * Only for an inference operation. The draft is explicit that on a span invoking
+ * sub-operations (an agent or workflow span) the attribute records the cost of the span's
+ * own operation and NOT that of its children — and a turn span's cost is by definition the
+ * sum of its child chat spans. So the turn total stays on the `{runtime}.usage.cost`
+ * extension, where summing children is this hook's own defined behavior.
+ *
+ * The draft also states an instrumentation MUST NOT report cost it cannot determine. A zero
+ * total means no rate applied (a model absent from the table with zeroed `default` rates),
+ * which is indistinguishable from free, so nothing is emitted in that case.
+ */
+function costAttrs(cost: CostBreakdown, scope: UsageScope, round8: (value: number) => number): AttrPair[] {
+  if (scope !== "inference" || !costSemconv() || !(cost.totalCost > 0)) {
+    return [];
+  }
+  const pairs: AttrPair[] = [
+    ["gen_ai.usage.cost.amount", double(round8(cost.totalCost))],
+    // Conditionally Required in the draft whenever the amount is set.
+    ["gen_ai.usage.cost.currency", cost.currency],
+    ["gen_ai.usage.cost.source", COST_SOURCE_LOCAL],
+  ];
+  if (costBreakdown()) {
+    // The classes of COST_BREAKDOWN_ISSUE that this hook can separate. They sum to the
+    // amount above. `reasoning` is not one of them: reasoning tokens are billed at the
+    // output rate and are already counted in it. `tool` has no cost of its own here, as the
+    // tools run locally.
+    pairs.push(
+      ["gen_ai.usage.cost.input", double(round8(cost.inputTokenCost))],
+      ["gen_ai.usage.cost.output", double(round8(cost.outputCost))],
+      ["gen_ai.usage.cost.cache_read", double(round8(cost.cacheReadCost))],
+      ["gen_ai.usage.cost.cache_write", double(round8(cost.cacheWriteCost))],
+    );
+  }
+  return pairs;
+}
+
 /** Tokens and cost, rounded to 8 decimal places before being attached. */
 export function usageAttrs(
   usage: Usage,
@@ -367,6 +441,10 @@ export function usageAttrs(
     ["gen_ai.usage.output_tokens", usage.output_tokens],
     ["gen_ai.usage.reasoning.output_tokens", usage.reasoning_output_tokens],
     ...cacheBreakdown,
+    // Cost under `gen_ai.*` is allowed only because COST_ATTRIBUTES_PR puts it in the
+    // registry. Until that PR merges the extensions below are kept as well, so a backend
+    // already reading them does not lose cost if the draft names change.
+    ...costAttrs(cost, scope, round8),
     // Everything below is an extension absent from the semconv registry. `gen_ai.*` is
     // OTel's namespace, so custom attributes live under the runtime's own prefix.
     [`${runtime}.usage.total_tokens`, usage.total_tokens],

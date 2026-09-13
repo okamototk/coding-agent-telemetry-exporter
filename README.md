@@ -9,7 +9,7 @@ system prompt, conversation history, and user prompt) and **cost** into
 [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 span attributes, then sending them to an OTel Collector over OTLP/HTTP. The same
 observations also produce the semconv **GenAI metrics** — histograms of token counts,
-durations, and call counts.
+durations, call counts, and cost.
 
 ```
 hook event → stdin(JSON) → otel-genai-hook → OTLP/HTTP(JSON) → OTel Collector
@@ -168,7 +168,9 @@ turn's start time.
 ### Tokens and cost (on the turn span and the LLM request spans)
 
 `gen_ai.*` is a namespace OTel owns, so only attributes defined in the semconv registry go
-there; extensions live under `codex.*` / `claude.*`.
+there; extensions live under `codex.*` / `claude.*`. The one exception is cost, which a draft
+still under review puts in the registry — see
+[below](#cost-under-gen_ai-implemented-from-an-unmerged-draft).
 
 | Attribute | Contents |
 | --- | --- |
@@ -180,10 +182,54 @@ there; extensions live under `codex.*` / `claude.*`.
 | `claude.usage.cache_write.5m.input_tokens` / `claude.usage.cache_write.1h.input_tokens` | Per-TTL breakdown of the ephemeral cache. Anthropic-specific and absent from semconv. **LLM request spans only** |
 | `codex.usage.uncached_input_tokens` | `input_tokens - cached_input_tokens`: the billable uncached share. **LLM request spans only** |
 | `codex.usage.total_tokens` | input + output. Absent from the semconv registry, hence the runtime prefix |
-| `codex.usage.cost` | Estimated cost. **An extension attribute, undefined in semconv** |
+| `codex.usage.cost` | Estimated cost. **An extension attribute, undefined in the released semconv** |
 | `codex.usage.input_cost` / `codex.usage.output_cost` | The cost breakdown (the input side already has cache rates applied) |
 | `codex.usage.cost.currency` | Default `USD` |
 | `codex.usage.cost.pricing_matched` | `false` signals the model was not in the rate table and `default` rates were used |
+| `gen_ai.usage.cost.amount` | The same cost under the semconv name. **From an unmerged draft; see below. LLM request spans only** |
+| `gen_ai.usage.cost.currency` | ISO 4217 code, Conditionally Required by the draft whenever the amount is set. **LLM request spans only** |
+| `gen_ai.usage.cost.source` | Always `local`: this hook derives cost from `pricing.json` rather than reading a charged amount off the response. **LLM request spans only** |
+
+#### Cost under `gen_ai.*` (implemented from an unmerged draft)
+
+The released GenAI semconv defines nothing for cost, which is why `codex.usage.cost` /
+`claude.usage.cost` exist. A draft is under review that puts it in the registry:
+
+> **[semantic-conventions-genai PR #443](https://github.com/open-telemetry/semantic-conventions-genai/pull/443)** — adds the `gen_ai.usage.cost.amount` / `.currency` / `.source` attributes and the `gen_ai.client.operation.cost` metric.
+
+**The three attributes above and that metric are implemented from that draft, which is not
+merged.** The names can still change; `CAT_OTEL_COST_SEMCONV=0` turns them off. The
+`codex.*` / `claude.*` cost extensions are emitted regardless, so nothing is lost either
+way.
+
+Two points where the draft dictates the behavior:
+
+- **The turn span carries no `gen_ai.usage.cost.*`.** The draft states that on a span
+  invoking sub-operations (an agent or workflow span) the attribute records the cost of the
+  span's *own* operation and **not** that of its children. A turn's cost is by definition
+  the sum of its child `chat` spans, so the total stays on `codex.usage.cost` /
+  `claude.usage.cost`, where summing children is this hook's own documented behavior.
+- **No cost is emitted when none can be determined.** The draft forbids reporting a cost
+  that cannot be determined, so an amount of zero — a model absent from the rate table whose
+  `default` rates are also zero, indistinguishable from free — produces neither attributes
+  nor a metric point.
+
+`gen_ai.usage.cost.source` distinguishes receiving from deriving: `provider` when the amount
+came back in the response, `local` when the emitting component computed it. Neither Codex's
+rollout nor Claude Code's transcript reports a charged amount, so this hook is always
+`local`. It is the semconv counterpart of `codex.usage.cost.pricing_matched`, which stays on
+as the finer signal of *how* the local figure was reached.
+
+A follow-up proposes splitting cost per class:
+
+> **[semantic-conventions-genai issue #484](https://github.com/open-telemetry/semantic-conventions-genai/issues/484)** — `gen_ai.usage.cost.{input,output,cache_read,cache_write,reasoning,tool}`.
+
+`CAT_OTEL_COST_BREAKDOWN=1` emits the four classes this hook can separate —
+`gen_ai.usage.cost.input` (the uncached input), `.output`, `.cache_read`, `.cache_write` —
+which add up to `gen_ai.usage.cost.amount`. It is **off by default**: that issue is still an
+open discussion with its class list unresolved, so it is a step less settled than PR #443.
+`reasoning` is not among them because reasoning tokens are billed at the output rate and are
+already inside `.output`; `tool` has none, as the tools run locally.
 
 Leaving the cache breakdown off the turn span is what semconv prescribes. It was explicitly
 removed from the invoke_agent internal span because a turn's totals span several models and
@@ -228,7 +274,11 @@ turn is reported as `codex.turn.model` / `claude.turn.model` instead (the
 
 The resource attributes are `service.name` (default `codex` / `claude-code`),
 `telemetry.sdk.name`, `telemetry.sdk.language` (`nodejs`), and whatever
-`CAT_OTEL_RESOURCE_ATTRIBUTES` (or `OTEL_RESOURCE_ATTRIBUTES`) contains.
+`CAT_OTEL_RESOURCE_ATTRIBUTES` (or `OTEL_RESOURCE_ATTRIBUTES`) contains. The configured ones
+are also copied onto every metric data point, so a backend that indexes only data point
+attributes can still group by them (`CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=0` turns
+that off). No identity is derived from the rollout; for `user.email` / `enduser.id` see §5,
+"Identifying who ran the session".
 
 ### Message content (off by default)
 
@@ -340,6 +390,7 @@ histograms, with the bucket boundaries semconv lists as SHOULD.
 | --- | --- | --- | --- |
 | `gen_ai.client.token.usage` | `{token}` | Tokens in one LLM request; two points per `chat` span, input and output | `gen_ai.operation.name` (`chat`), `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.token.type` (`input` / `output`) |
 | `gen_ai.client.operation.duration` | `s` | `chat` span duration | The above minus `gen_ai.token.type` |
+| `gen_ai.client.operation.cost` | `{cost}` | Cost of one LLM request. **From [PR #443](https://github.com/open-telemetry/semantic-conventions-genai/pull/443), unmerged**; `CAT_OTEL_COST_SEMCONV=0` turns it off | The `operation.duration` set plus `gen_ai.usage.cost.currency` (Required) and `gen_ai.usage.cost.source` |
 | `gen_ai.invoke_agent.duration` | `s` | Turn span duration | `gen_ai.agent.name`, `error.type` |
 | `gen_ai.invoke_agent.inference_calls` | `{inference_call}` | LLM requests in that turn | `gen_ai.agent.name` |
 | `gen_ai.invoke_agent.tool_calls` | `{tool_call}` | Tool calls in that turn | `gen_ai.agent.name` |
@@ -372,8 +423,15 @@ The remaining semconv metrics are outside what this hook can observe.
 | `gen_ai.server.request.duration` / `time_per_output_token` / `time_to_first_token` | Measured server-side, on the inference server |
 | `gen_ai.invoke_workflow.duration` | The CLI has no concept matching a workflow |
 
-**semconv defines no cost metric.** Cost is reported, as before, only through the
-`codex.usage.cost` / `claude.usage.cost` span attributes — extensions undefined in semconv.
+**The released semconv defines no cost metric.** `gen_ai.client.operation.cost` above comes
+from the unmerged [PR #443](https://github.com/open-telemetry/semantic-conventions-genai/pull/443),
+which specifies a histogram with unit `{cost}` and the currency in an attribute rather than
+in the unit, and no bucket boundaries — so the boundaries used here (a fraction of a cent up
+to a few dollars, the range a single coding-agent request falls in) are this hook's own
+choice, unlike every other metric above. It is emitted for `chat` spans only, for the reason
+[given above](#cost-under-gen_ai-implemented-from-an-unmerged-draft): the turn total is the
+sum of its children, which the draft excludes. The per-turn and per-session totals therefore
+remain available only as the `codex.usage.cost` / `claude.usage.cost` span attributes.
 
 ---
 
@@ -390,7 +448,10 @@ Settings use one `CAT_OTEL_*` namespace across every supported agent.
 | `CAT_OTEL_TIMEOUT` | `3` | POST timeout in seconds |
 | `CAT_OTEL_SERVICE_NAME` | per runtime | `codex` or `claude-code` |
 | `CAT_OTEL_RESOURCE_ATTRIBUTES` | — | Extra resource attributes |
+| `CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES` | `1` | `0` stops copying those attributes onto the metric data points (they stay on the resource). Also reads `OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES` |
 | `CAT_OTEL_PRICING_FILE` | the bundled `pricing.json` | Rate table |
+| `CAT_OTEL_COST_SEMCONV` | `1` | `0` stops emitting the `gen_ai.usage.cost.*` attributes and the `gen_ai.client.operation.cost` metric of the unmerged [PR #443](https://github.com/open-telemetry/semantic-conventions-genai/pull/443). The `codex.*` / `claude.*` cost extensions are emitted either way |
+| `CAT_OTEL_COST_BREAKDOWN` | `0` | `1` adds the per-class breakdown of [issue #484](https://github.com/open-telemetry/semantic-conventions-genai/issues/484) (`gen_ai.usage.cost.input` / `.output` / `.cache_read` / `.cache_write`), whose class list is still an open discussion |
 | `CAT_OTEL_CAPTURE_PROMPTS` | `0` | `1` puts prompt and response content on the spans |
 | `CAT_OTEL_MESSAGES_MODE` | `attribute` | Where attributes semconv also defines on the event (content, model name, token counts, ...) go: `attribute` (span attributes) / `event` (trace event) / `both`. An unknown value is treated as `attribute` |
 | `CAT_OTEL_CONTENT_MAX_CHARS` | `20000` | Per-attribute limit for captured content |
@@ -400,6 +461,30 @@ Settings use one `CAT_OTEL_*` namespace across every supported agent.
 
 Environment variables are inherited by the hook's child process, so either export them from
 `~/.zshrc` or make the registered `command` an `env VAR=... node ...` invocation.
+
+### Identifying who ran the session
+
+Neither the rollout nor the transcript carries an identity, so per-person attribution comes
+from the resource attributes. Set them once in your shell:
+
+```bash
+export OTEL_RESOURCE_ATTRIBUTES="user.email=$(git config user.email),enduser.id=$(whoami)"
+```
+
+`CAT_OTEL_RESOURCE_ATTRIBUTES` takes the same list and wins over `OTEL_RESOURCE_ATTRIBUTES`
+when both are set. The parser splits on `,` and on the first `=`, so a value cannot contain a
+comma. These are **resource** attributes, so they apply to spans and metrics alike; on top of
+that, every metric data point carries a copy, because whether a backend promotes resource
+attributes to metric tags is backend-specific. That copy is what makes `sum by (enduser.id)`
+work without a Collector rule. Each distinct value is its own time series, so keep the list
+to attributes with few values — set `CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=0` to send
+them on the resource alone. A semconv attribute already on the data point is never
+overwritten by a same-named custom one.
+
+Span attributes get no copy: the identity is on the resource the spans belong to.
+
+This is personal data. Enable it only after checking your retention policy; hashing the
+address, or using `enduser.id` alone, keeps the grouping without the mail address (see §10).
 
 ### Rate table
 
@@ -462,8 +547,9 @@ With `CAT_OTEL_CAPTURE_PROMPTS=1` and the default `CAT_OTEL_MESSAGES_MODE=attrib
 
 Against a synthetic rollout and a local OTLP stub, the real hook runs as a subprocess
 through `SessionStart → UserPromptSubmit → Stop → SessionEnd`, asserting on the span
-structure, tokens, cost, deduplication, content capture, and metrics (destination path,
-units, delta temporality, buckets matching boundaries, attribute cardinality).
+structure, tokens, cost (both the extension and the draft `gen_ai.usage.cost.*` names, and
+their opt-out and breakdown flags), deduplication, content capture, and metrics (destination
+path, units, delta temporality, buckets matching boundaries, attribute cardinality).
 
 ```bash
 npm test           # runs src/*.ts directly (Node 23.6+ / 22.18+)
@@ -554,8 +640,13 @@ src/types.ts             Types for the payload, state, and usage
   execution and time waiting on the user in between are therefore counted in.
 - **Sum metrics over time on the backend.** With delta temporality, even one turn arrives
   in several deliveries, e.g. from `SubagentStop` and then `Stop`.
-- **There is no cost metric.** semconv defines none, so cost is emitted only as the
-  `codex.usage.cost` / `claude.usage.cost` span attributes.
+- **The cost metric follows an unmerged draft.** The released semconv defines none, so
+  `gen_ai.client.operation.cost` and the `gen_ai.usage.cost.*` attributes are implemented
+  from [PR #443](https://github.com/open-telemetry/semantic-conventions-genai/pull/443) and
+  may change with it (`CAT_OTEL_COST_SEMCONV=0` opts out). Its bucket boundaries are this
+  hook's own choice, and per-turn / per-session cost is not in it: the draft excludes
+  children's cost from a parent span, so those totals live only on the `codex.usage.cost` /
+  `claude.usage.cost` span attributes.
 - **`gen_ai.client.operation.duration` carries no `error.type`.** Per-request failures are
   not observable from the rollout or the transcript, so the attribute cannot be set
   (`gen_ai.execute_tool.duration` and `gen_ai.invoke_agent.duration` do carry it).

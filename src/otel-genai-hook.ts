@@ -39,14 +39,18 @@
  * `codex.usage.uncached_input_tokens`. Output includes reasoning tokens, broken out as
  * `gen_ai.usage.reasoning.output_tokens`.
  *
- * Cost has no semconv definition, so it is reported through the `codex.usage.cost` /
+ * Cost is not in the released semconv, so it is reported through the `codex.usage.cost` /
  * `claude.usage.cost` extension attributes (`gen_ai.*` is OTel's namespace and takes no
- * custom attributes). The rate table is pricing.json, overridable via CAT_OTEL_PRICING_FILE.
+ * custom attributes). Alongside them, the cost mapping of the **unmerged draft**
+ * https://github.com/open-telemetry/semantic-conventions-genai/pull/443 is emitted on the
+ * chat spans — `gen_ai.usage.cost.amount` / `.currency` / `.source` plus the
+ * `gen_ai.client.operation.cost` metric — which CAT_OTEL_COST_SEMCONV=0 turns off. The rate
+ * table is pricing.json, overridable via CAT_OTEL_PRICING_FILE.
  *
  * The same observations also produce the semconv GenAI metrics
  * (`gen_ai.client.token.usage`, `gen_ai.client.operation.duration`,
- * `gen_ai.invoke_agent.*`, `gen_ai.execute_tool.duration`) as delta histograms
- * (see metrics.ts).
+ * `gen_ai.client.operation.cost`, `gen_ai.invoke_agent.*`,
+ * `gen_ai.execute_tool.duration`) as delta histograms (see metrics.ts).
  *
  * The hook is always fail-open. Whether the Collector is down or the rollout is unreadable,
  * it exits 0 and never halts the agent's session.
@@ -66,6 +70,13 @@
  *                                     (also reads OTEL_RESOURCE_ATTRIBUTES)
  *     CAT_OTEL_PRICING_FILE           Path to the rate table JSON. Default: the bundled
  *                                     pricing.json
+ *     CAT_OTEL_COST_SEMCONV           0 to stop emitting the draft gen_ai.usage.cost.*
+ *                                     attributes and the gen_ai.client.operation.cost
+ *                                     metric (default 1). The {runtime}.usage.cost
+ *                                     extensions are emitted either way
+ *     CAT_OTEL_COST_BREAKDOWN         1 to add the per-class cost breakdown of
+ *                                     https://github.com/open-telemetry/semantic-conventions-genai/issues/484
+ *                                     (default 0; that issue's classes are still open)
  *     CAT_OTEL_CAPTURE_PROMPTS        1 to put prompt and response content on the spans
  *                                     (default 0 = metadata and tokens only)
  *     CAT_OTEL_MESSAGES_MODE          Where to put attributes semconv also defines on the
@@ -326,6 +337,8 @@ function syncRollout(
       outputTokens: usage.output_tokens,
       startNs,
       endNs,
+      cost: breakdown.totalCost,
+      currency: breakdown.currency,
     });
 
     let bucket = perTurn.get(turnId);
