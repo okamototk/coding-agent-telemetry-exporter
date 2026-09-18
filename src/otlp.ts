@@ -7,7 +7,7 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 
-import { debug, env, extraResourceAttributes, kvList, tracesUrl } from "./env.ts";
+import { debug, extraResourceAttributes, numberEnv, otlpHeaders, tracesUrl } from "./env.ts";
 
 export const SCOPE_NAME = "agent.otel.genai.hook";
 export const SCOPE_VERSION = "1.0.0";
@@ -197,11 +197,9 @@ export function postOtlp(url: string, payload: unknown, summary: string): Promis
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "Content-Length": String(body.byteLength),
-    ...kvList(env(["CAT_OTEL_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS"])),
+    ...otlpHeaders(),
   };
-  const rawTimeout = env(["CAT_OTEL_TIMEOUT"]);
-  const timeout = rawTimeout ? Number(rawTimeout) : Number.NaN;
-  const timeoutMs = Math.max(1, (Number.isFinite(timeout) ? timeout : 3) * 1000);
+  const timeoutMs = Math.max(1, numberEnv("CAT_OTEL_TIMEOUT", 3) * 1000);
   const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
 
   return new Promise<void>((resolve) => {

@@ -30,31 +30,90 @@ export function flag(name: string, fallback = false): boolean {
   return truthy(raw);
 }
 
+/**
+ * A numeric setting. An unset *or empty* value falls back, like {@link flag}: `Number("")`
+ * is 0, which would read as a deliberate zero (a 0 ms wait, a 0 USD rate) rather than as
+ * "not configured".
+ */
 export function numberEnv(name: string, fallback: number): number {
-  const parsed = Number(process.env[name]);
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") {
+    return fallback;
+  }
+  const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-/**
- * Per-signal OTLP/HTTP URL. A trailing `/v1/<signal>` is stripped and re-appended so
- * that a bare base URL and a signal-qualified one produce the same result.
- */
-function signalUrl(signal: string, names: readonly string[]): string {
-  const base = env([...names, "OTEL_EXPORTER_OTLP_ENDPOINT"], "http://localhost:4318")
-    .replace(/\/+$/, "")
-    .replace(/\/v1\/(traces|metrics|logs)$/, "");
-  return `${base}/v1/${signal}`;
+const DEFAULT_ENDPOINT = "http://localhost:4318";
+
+const SIGNAL_PATH = /\/v1\/(traces|metrics|logs)$/;
+
+interface EndpointSource {
+  name: string;
+  /**
+   * True for a variable naming one signal. OTLP defines those as the **full** URL, while a
+   * base variable is an origin that `/v1/<signal>` is appended to.
+   */
+  perSignal: boolean;
 }
 
+/** Whether the URL carries a path of its own, rather than being a bare origin. */
+function hasPath(url: string): boolean {
+  try {
+    const { pathname } = new URL(url);
+    return pathname !== "" && pathname !== "/";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Per-signal OTLP/HTTP URL.
+ *
+ * A per-signal variable (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `CAT_OTEL_METRICS_ENDPOINT`)
+ * is the full URL and keeps its own path; only a base variable (`CAT_OTEL_ENDPOINT`,
+ * `OTEL_EXPORTER_OTLP_ENDPOINT`) gets `/v1/<signal>` appended. Appending to a per-signal
+ * URL used to turn a custom path such as `https://host/otlp-traces` into
+ * `https://host/otlp-traces/v1/traces`.
+ *
+ * Both forms stay forgiving where it cannot be a real path: a bare origin still gets
+ * `/v1/<signal>`, and a `/v1/<signal>` suffix is normalized to this signal, so pointing a
+ * metrics variable at a URL ending in `/v1/traces` still reaches `/v1/metrics`.
+ */
+function signalUrl(signal: string, sources: readonly EndpointSource[]): string {
+  for (const source of sources) {
+    const value = (process.env[source.name] ?? "").trim().replace(/\/+$/, "");
+    if (!value) {
+      continue;
+    }
+    const base = value.replace(SIGNAL_PATH, "");
+    if (source.perSignal && base === value && hasPath(value)) {
+      return value;
+    }
+    return `${base}/v1/${signal}`;
+  }
+  return `${DEFAULT_ENDPOINT}/v1/${signal}`;
+}
+
+const BASE_ENDPOINT: EndpointSource = {
+  name: "OTEL_EXPORTER_OTLP_ENDPOINT",
+  perSignal: false,
+};
+
 export function tracesUrl(): string {
-  return signalUrl("traces", ["CAT_OTEL_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]);
+  return signalUrl("traces", [
+    { name: "CAT_OTEL_ENDPOINT", perSignal: false },
+    { name: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", perSignal: true },
+    BASE_ENDPOINT,
+  ]);
 }
 
 export function metricsUrl(): string {
   return signalUrl("metrics", [
-    "CAT_OTEL_METRICS_ENDPOINT",
-    "CAT_OTEL_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    { name: "CAT_OTEL_METRICS_ENDPOINT", perSignal: true },
+    { name: "CAT_OTEL_ENDPOINT", perSignal: false },
+    { name: "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", perSignal: true },
+    BASE_ENDPOINT,
   ]);
 }
 
@@ -77,6 +136,30 @@ export function kvList(raw: string): Record<string, string> {
 /** The operator-supplied resource attributes, as a `k=v` map. */
 export function extraResourceAttributes(): Record<string, string> {
   return kvList(env(["CAT_OTEL_RESOURCE_ATTRIBUTES", "OTEL_RESOURCE_ATTRIBUTES"]));
+}
+
+/**
+ * The extra OTLP headers to send.
+ *
+ * OTLP specifies these values as percent-encoded (the W3C Baggage rules), which is the only
+ * way to put a `,` or `=` in one. Without decoding, the spec-conformant
+ * `Authorization=Bearer%20abc` sends a literal `%20` and the Collector answers 401 — which
+ * this hook then swallows, being fail-open. Header *names* are used verbatim; only values
+ * are decoded, and a value that is not valid encoding is passed through unchanged rather
+ * than dropped.
+ */
+export function otlpHeaders(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(
+    kvList(env(["CAT_OTEL_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS"])),
+  )) {
+    try {
+      out[name] = decodeURIComponent(value);
+    } catch {
+      out[name] = value;
+    }
+  }
+  return out;
 }
 
 /**

@@ -5,10 +5,11 @@
   "description": "A coding-agent hook that exports token usage and cost as OTel GenAI traces (supports Codex CLI, Claude Code, and Kiro CLI)",
   "type": "module",
   "engines": {
-    "node": ">=18.18"
+    "node": ">=22.18"
   },
   "scripts": {
     "build": "tsc",
+    "postbuild": "node -e \"import('node:fs').then(fs => fs.copyFileSync('pricing.json', 'dist/pricing.json'))\"",
     "typecheck": "tsc --noEmit",
     "test": "node --test src/*.test.ts",
     "test:dist": "npm run build && node --test dist/*.test.js"
