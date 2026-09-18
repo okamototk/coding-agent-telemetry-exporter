@@ -145,7 +145,7 @@ import {
   turnAttr,
   usageAttrs,
 } from "./spans.ts";
-import { loadState, saveState } from "./state.ts";
+import { withState } from "./state.ts";
 import { nowNs, toNs } from "./time.ts";
 import {
   emptyBucket,
@@ -646,14 +646,15 @@ export async function processPayload(
     return [];
   }
 
-  const state = loadState(sessionId, runtime);
   const pricing = loadPricing();
   const metrics = newMetricStore();
-  const spans =
+  // The state file's read-modify-write is serialized against other hook processes; the export
+  // below deliberately sits outside it, being the slow part and needing no state.
+  const spans = withState(sessionId, runtime, (state) =>
     runtime === "kiro"
       ? processKiroEvent(state, payload, pricing, metrics)
-      : (HANDLERS[event] as Handler)(state, payload, pricing, metrics);
-  saveState(state);
+      : (HANDLERS[event] as Handler)(state, payload, pricing, metrics),
+  );
   const serviceName = env(["CAT_OTEL_SERVICE_NAME"], DEFAULT_SERVICE[runtime]);
   // Traces and metrics are separate signals with separate endpoints, so send in parallel.
   await Promise.all([
