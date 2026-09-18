@@ -20,6 +20,8 @@ export interface Pricing {
   currency: string;
   default: Rates;
   per_million_tokens: Record<string, Rates>;
+  /** The date the rates were checked, `YYYY-MM-DD`. Absent in a table that omits it. */
+  as_of?: string;
 }
 
 export interface CostBreakdown {
@@ -65,6 +67,30 @@ function pricingCandidates(): string[] {
   return [join(HERE, "pricing.json"), join(HERE, "..", "pricing.json")];
 }
 
+/** How old a rate table may get before the debug log points it out. */
+const STALE_AFTER_DAYS = 180;
+
+/**
+ * Notes an aging rate table in the debug log. Rates move, and a table nobody has revisited
+ * reports plausible numbers that are quietly wrong — the one failure mode a cost figure
+ * cannot signal on its own. A table with no `as_of` says nothing about its age, so it is
+ * left alone rather than warned about on every event.
+ */
+function warnIfStale(path: string, asOf: string | undefined): void {
+  if (asOf === undefined) {
+    return;
+  }
+  const checked = Date.parse(asOf);
+  if (Number.isNaN(checked)) {
+    debug(`pricing as_of is not a date: ${asOf} (${path})`);
+    return;
+  }
+  const days = Math.floor((Date.now() - checked) / 86_400_000);
+  if (days > STALE_AFTER_DAYS) {
+    debug(`pricing table is ${days} days old (as_of=${asOf}, ${path}); rates may have changed`);
+  }
+}
+
 export function loadPricing(): Pricing {
   const failures: string[] = [];
   for (const path of pricingCandidates()) {
@@ -80,10 +106,13 @@ export function loadPricing(): Pricing {
       continue;
     }
     const table = data as Partial<Pricing>;
+    const as_of = typeof table.as_of === "string" ? table.as_of : undefined;
+    warnIfStale(path, as_of);
     return {
       currency: table.currency || "USD",
       default: table.default || FALLBACK_PRICING.default,
       per_million_tokens: table.per_million_tokens || {},
+      ...(as_of === undefined ? {} : { as_of }),
     };
   }
   // Still report tokens even when the rate table cannot be read.

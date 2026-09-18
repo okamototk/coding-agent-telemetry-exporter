@@ -24,7 +24,18 @@ const HOOK = fileURLToPath(import.meta.url).replace(/\.test\.(m?[jt]s)$/, ".$1")
 const SESSION_ID = "01a02467-38a1-7ad2-9bc5-32037b0e52aa";
 const TURN_ID = "01a02467-3f01-7c50-8fbe-cfc45eb2d56d";
 const SECOND_TURN_ID = "01a02467-4a02-7c50-8fbe-cfc45eb2d56e";
-const MODEL = "gpt-5.1-codex";
+const MODEL = "gpt-5-nano";
+
+/**
+ * The bundled pricing.json rates for {@link MODEL}, repeated here rather than read from the
+ * table: deriving them would move both sides of every cost assertion together and make a
+ * broken table lookup invisible. MODEL is picked so its rates differ from the table's
+ * `default` *and* from the hardcoded fallback rates, so falling through to either one fails
+ * these assertions instead of passing by coincidence.
+ */
+const RATE_INPUT = 0.05;
+const RATE_CACHED = 0.005;
+const RATE_OUTPUT = 0.4;
 
 interface OtlpAttribute {
   key: string;
@@ -553,9 +564,9 @@ test("tokens and cost for the first request", () => {
   assert.equal(Number(attributes["gen_ai.usage.reasoning.output_tokens"]), 300);
   assert.equal(attributes["gen_ai.request.reasoning.level"], "medium");
 
-  // gpt-5.1-codex: 2000*1.25 + 8000*0.125 + 500*10.00 (per 1M)
-  const expectedInput = (2_000 * 1.25 + 8_000 * 0.125) / 1_000_000;
-  const expectedOutput = (500 * 10.0) / 1_000_000;
+  // 2000 uncached + 8000 cache read + 500 output, at MODEL's rates (per 1M).
+  const expectedInput = (2_000 * RATE_INPUT + 8_000 * RATE_CACHED) / 1_000_000;
+  const expectedOutput = (500 * RATE_OUTPUT) / 1_000_000;
   assert.ok(Math.abs(Number(attributes["codex.usage.input_cost"]) - expectedInput) < 1e-9);
   assert.ok(Math.abs(Number(attributes["codex.usage.output_cost"]) - expectedOutput) < 1e-9);
   assert.ok(
@@ -574,7 +585,8 @@ test("the cost attributes of semconv-genai PR #443 ride on the chat span", () =>
   const first = byStart("chat")[0];
   assert.ok(first);
   const attributes = flatten(first.attributes);
-  const expected = (2_000 * 1.25 + 8_000 * 0.125 + 500 * 10.0) / 1_000_000;
+  const expected =
+    (2_000 * RATE_INPUT + 8_000 * RATE_CACHED + 500 * RATE_OUTPUT) / 1_000_000;
   assert.ok(Math.abs(Number(attributes["gen_ai.usage.cost.amount"]) - expected) < 1e-9);
   // Conditionally Required whenever the amount is set.
   assert.equal(attributes["gen_ai.usage.cost.currency"], "USD");
@@ -605,10 +617,10 @@ test("CAT_OTEL_COST_BREAKDOWN=1 adds the per-class breakdown of issue #484", asy
   assert.ok(first);
   const attributes = flatten(first.attributes);
   const classes = {
-    "gen_ai.usage.cost.input": (2_000 * 1.25) / 1_000_000,
-    "gen_ai.usage.cost.cache_read": (8_000 * 0.125) / 1_000_000,
+    "gen_ai.usage.cost.input": (2_000 * RATE_INPUT) / 1_000_000,
+    "gen_ai.usage.cost.cache_read": (8_000 * RATE_CACHED) / 1_000_000,
     "gen_ai.usage.cost.cache_write": 0,
-    "gen_ai.usage.cost.output": (500 * 10.0) / 1_000_000,
+    "gen_ai.usage.cost.output": (500 * RATE_OUTPUT) / 1_000_000,
   };
   for (const [key, value] of Object.entries(classes)) {
     assert.ok(Math.abs(Number(attributes[key]) - value) < 1e-9, `${key}=${attributes[key]}`);
@@ -948,8 +960,8 @@ test("gen_ai.client.operation.cost reports one point per request", () => {
   const cost = totals("gen_ai.client.operation.cost");
   // The same two requests as the token metric.
   assert.equal(cost.count, 2);
-  const first = (2_000 * 1.25 + 8_000 * 0.125 + 500 * 10.0) / 1_000_000;
-  const second = (3_000 * 1.25 + 9_000 * 0.125 + 200 * 10.0) / 1_000_000;
+  const first = (2_000 * RATE_INPUT + 8_000 * RATE_CACHED + 500 * RATE_OUTPUT) / 1_000_000;
+  const second = (3_000 * RATE_INPUT + 9_000 * RATE_CACHED + 200 * RATE_OUTPUT) / 1_000_000;
   assert.ok(Math.abs(cost.sum - (first + second)) < 1e-9, String(cost.sum));
 
   const point = dataPoints("gen_ai.client.operation.cost")[0];

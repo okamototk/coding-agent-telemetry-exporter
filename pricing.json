@@ -4,26 +4,130 @@
     "cached_input applies to the cached_input_tokens share of input_tokens.",
     "cache_creation_5m / cache_creation_1h are Claude's prompt cache write rates.",
     "Keys resolve by exact match, then longest prefix match, then default.",
+    "Keys are version-qualified on purpose. A family-wide key such as 'claude-haiku'",
+    "prefix-matches every generation, so it keeps applying one generation's rates",
+    "after the next one is priced differently -- silently, and reported as though a",
+    "rate had matched. A model absent from the table falls to `default` and is",
+    "flagged `pricing_matched=false` instead, which is a visible signal.",
     "Rates change: in production, point CAT_OTEL_PRICING_FILE at your own table."
   ],
+  "as_of": "2026-09-18",
   "currency": "USD",
   "default": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
   "per_million_tokens": {
-    "claude-opus": {
+    "claude-fable-5-1": {
+      "input": 10.0,
+      "cached_input": 0.25,
+      "cache_creation_5m": 12.5,
+      "cache_creation_1h": 20.0,
+      "output": 50.0
+    },
+    "claude-mythos-5-1": {
+      "input": 10.0,
+      "cached_input": 0.25,
+      "cache_creation_5m": 12.5,
+      "cache_creation_1h": 20.0,
+      "output": 50.0
+    },
+    "claude-fable-5": {
+      "input": 10.0,
+      "cached_input": 1.0,
+      "cache_creation_5m": 12.5,
+      "cache_creation_1h": 20.0,
+      "output": 50.0
+    },
+    "claude-mythos-5": {
+      "input": 10.0,
+      "cached_input": 1.0,
+      "cache_creation_5m": 12.5,
+      "cache_creation_1h": 20.0,
+      "output": 50.0
+    },
+    "claude-opus-5": {
       "input": 5.0,
       "cached_input": 0.5,
       "cache_creation_5m": 6.25,
       "cache_creation_1h": 10.0,
       "output": 25.0
     },
-    "claude-sonnet": {
+    "claude-opus-4-8": {
+      "input": 5.0,
+      "cached_input": 0.5,
+      "cache_creation_5m": 6.25,
+      "cache_creation_1h": 10.0,
+      "output": 25.0
+    },
+    "claude-opus-4-7": {
+      "input": 5.0,
+      "cached_input": 0.5,
+      "cache_creation_5m": 6.25,
+      "cache_creation_1h": 10.0,
+      "output": 25.0
+    },
+    "claude-opus-4-6": {
+      "input": 5.0,
+      "cached_input": 0.5,
+      "cache_creation_5m": 6.25,
+      "cache_creation_1h": 10.0,
+      "output": 25.0
+    },
+    "claude-opus-4-5": {
+      "input": 5.0,
+      "cached_input": 0.5,
+      "cache_creation_5m": 6.25,
+      "cache_creation_1h": 10.0,
+      "output": 25.0
+    },
+    "claude-sonnet-5": {
+      "input": 2.0,
+      "cached_input": 0.2,
+      "cache_creation_5m": 2.5,
+      "cache_creation_1h": 4.0,
+      "output": 10.0
+    },
+    "claude-sonnet-4-6": {
       "input": 3.0,
       "cached_input": 0.3,
       "cache_creation_5m": 3.75,
       "cache_creation_1h": 6.0,
       "output": 15.0
     },
-    "claude-haiku": {
+    "claude-sonnet-4-5": {
+      "input": 3.0,
+      "cached_input": 0.3,
+      "cache_creation_5m": 3.75,
+      "cache_creation_1h": 6.0,
+      "output": 15.0
+    },
+    "claude-haiku-4-5": {
+      "input": 1.0,
+      "cached_input": 0.1,
+      "cache_creation_5m": 1.25,
+      "cache_creation_1h": 2.0,
+      "output": 5.0
+    },
+    "claude-opus-4-1-20250805": {
+      "input": 15.0,
+      "cached_input": 1.5,
+      "cache_creation_5m": 18.75,
+      "cache_creation_1h": 30.0,
+      "output": 75.0
+    },
+    "claude-opus-4-20250514": {
+      "input": 15.0,
+      "cached_input": 1.5,
+      "cache_creation_5m": 18.75,
+      "cache_creation_1h": 30.0,
+      "output": 75.0
+    },
+    "claude-sonnet-4-20250514": {
+      "input": 3.0,
+      "cached_input": 0.3,
+      "cache_creation_5m": 3.75,
+      "cache_creation_1h": 6.0,
+      "output": 15.0
+    },
+    "claude-3-5-haiku-20241022": {
       "input": 0.8,
       "cached_input": 0.08,
       "cache_creation_5m": 1.0,

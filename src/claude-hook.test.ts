@@ -308,6 +308,38 @@ test("folds the Claude transcript, cache usage, tools, and subagents into one tu
   assert.equal(cached["gen_ai.request.model"], model);
   assert.equal(cached["gen_ai.agent.name"], "claude-code");
 
+  // Cost for the same request. claude-sonnet-4-5 in pricing.json: input 3.0, cached_input
+  // 0.3, cache_creation_5m 3.75, cache_creation_1h 6.0, output 15.0 per 1M. The rates are
+  // repeated rather than read from the table so a broken lookup cannot move both sides.
+  //
+  // The cache-write rates are the point of this block: a regression charging writes at the
+  // base input rate would bill 30*3.0 instead of 20*3.75 + 10*6.0, which the totals below
+  // separate. The whole prompt is 180 tokens, of which 100 are uncached, 50 a cache read,
+  // and 30 a cache write (20 at the 5m TTL, 10 at the 1h TTL).
+  const uncachedCost = (100 * 3.0) / 1_000_000;
+  const cacheReadCost = (50 * 0.3) / 1_000_000;
+  const cacheWriteCost = (20 * 3.75 + 10 * 6.0) / 1_000_000;
+  const outputCost = (10 * 15.0) / 1_000_000;
+  const expectedInputCost = uncachedCost + cacheReadCost + cacheWriteCost;
+  const expectedTotal = expectedInputCost + outputCost;
+
+  assert.ok(
+    Math.abs(Number(cached["claude.usage.input_cost"]) - expectedInputCost) < 1e-9,
+    `input_cost=${cached["claude.usage.input_cost"]} expected=${expectedInputCost}`,
+  );
+  assert.ok(Math.abs(Number(cached["claude.usage.output_cost"]) - outputCost) < 1e-9);
+  assert.ok(
+    Math.abs(Number(cached["claude.usage.cost"]) - expectedTotal) < 1e-9,
+    `cost=${cached["claude.usage.cost"]} expected=${expectedTotal}`,
+  );
+  assert.equal(cached["claude.usage.cost.currency"], "USD");
+  // False here would mean the model name missed the table and `default` rates were applied.
+  assert.equal(cached["claude.usage.cost.pricing_matched"], true);
+  // The draft cost attributes carry the same amount on the chat span.
+  assert.ok(Math.abs(Number(cached["gen_ai.usage.cost.amount"]) - expectedTotal) < 1e-9);
+  assert.equal(cached["gen_ai.usage.cost.currency"], "USD");
+  assert.equal(cached["gen_ai.usage.cost.source"], "local");
+
   // The subagent's spans. semconv treats a subagent as a distinct agent and defines
   // gen_ai.agent.name as the name of the agent that ran the tool or inference, so
   // agent_type goes there rather than into a custom attribute.
