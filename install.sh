@@ -1,23 +1,56 @@
 #!/usr/bin/env bash
 # Registers otel-genai-hook in a coding agent's configuration.
 # Supported agents: Codex CLI / Claude Code / Kiro CLI
-#
-#   ./install.sh --codex
-#   ./install.sh --claude
-#   ./install.sh --kiro --agent my-agent
-#   ./install.sh --all
-#   ./install.sh --claude --project
-#   ./install.sh --all --uninstall
-#
-# One of --codex / --claude / --kiro / --all is required, so nothing is registered by accident.
-#
-# Kiro CLI keeps hooks in an agent config rather than in one settings file, and its built-in
-# kiro_default agent cannot take them, so --kiro patches the agent configs in
-# ~/.kiro/agents (or ./.kiro/agents with --project). --agent NAME picks one, creating it if
-# it does not exist yet; without it, every config already in that directory is patched.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+usage() {
+  cat <<'USAGE'
+Registers otel-genai-hook in a coding agent's configuration.
+Supported agents: Codex CLI / Claude Code / Kiro CLI
+
+  ./install.sh --codex
+  ./install.sh --claude
+  ./install.sh --kiro --agent my-agent
+  ./install.sh --all
+  ./install.sh --claude --project
+  ./install.sh --all --uninstall
+  ./install.sh --all --dry-run
+
+Targets (exactly one is required, so nothing is registered by accident):
+  --codex | --claude | --kiro | --all
+
+Options:
+  --global        Write the user-level config (default)
+  --project       Write ./.codex, ./.claude, ./.kiro in the current directory
+  --source        Register src/otel-genai-hook.ts (needs Node >= 22.18 / >= 23.6)
+  --dist          Register dist/otel-genai-hook.js (run `npm run build` first)
+  --agent NAME    Kiro only: the agent config to patch, created if absent
+  --uninstall     Remove this hook's entries, leaving every other hook in place
+  --dry-run       Report what would change without writing anything
+  -h, --help      Show this message
+
+Kiro CLI keeps hooks in an agent config rather than in one settings file, and its built-in
+kiro_default agent cannot take them, so --kiro patches the agent configs in
+~/.kiro/agents (or ./.kiro/agents with --project). --agent NAME picks one, creating it if
+it does not exist yet; without it, every config already in that directory is patched.
+
+Environment:
+  NODE            The node binary to register (default: the one on PATH)
+  CODEX_HOME / CLAUDE_CONFIG_DIR / KIRO_HOME    Override where the config lives
+USAGE
+}
+
+# Resolve symlinks so that installing through a symlinked install.sh still registers the
+# real checkout. readlink -f is not portable to macOS, hence the loop.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  link="$(readlink "$SOURCE")"
+  case "$link" in
+    /*) SOURCE="$link" ;;
+    *) SOURCE="$(cd -P "$(dirname "$SOURCE")" && pwd)/$link" ;;
+  esac
+done
+HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 NODE="${NODE:-node}"
 
 scope="global"
@@ -25,9 +58,11 @@ mode="install"
 entry="auto"
 platform=""
 agent=""
+dry_run="0"
 while [ $# -gt 0 ]; do
   arg="$1"
   case "$arg" in
+    -h|--help) usage; exit 0 ;;
     --codex|--claude|--kiro|--all)
       if [ -n "$platform" ]; then
         echo "pass only one of --codex / --claude / --kiro / --all" >&2
@@ -40,6 +75,7 @@ while [ $# -gt 0 ]; do
     --source) entry="source" ;;
     --dist) entry="dist" ;;
     --uninstall) mode="uninstall" ;;
+    --dry-run) dry_run="1" ;;
     --agent)
       shift
       if [ $# -eq 0 ]; then
@@ -49,17 +85,22 @@ while [ $# -gt 0 ]; do
       agent="$1"
       ;;
     --agent=*) agent="${arg#--agent=}" ;;
-    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+    *)
+      echo "unknown argument: $arg" >&2
+      echo "run './install.sh --help' for usage" >&2
+      exit 2
+      ;;
   esac
   shift
 done
 
 if [ -z "$platform" ]; then
   echo "pass a target: --codex, --claude, --kiro, or --all" >&2
+  echo "run './install.sh --help' for usage" >&2
   exit 2
 fi
 
-if [ -n "$agent" ] && [ "$platform" = "codex" -o "$platform" = "claude" ]; then
+if [ -n "$agent" ] && [[ "$platform" = "codex" || "$platform" = "claude" ]]; then
   echo "--agent applies to --kiro only" >&2
   exit 2
 fi
@@ -68,6 +109,10 @@ if ! command -v "$NODE" >/dev/null 2>&1; then
   echo "node not found (set NODE=/path/to/node)" >&2
   exit 1
 fi
+# Register an absolute path. A bare `node` resolves against the PATH of whatever launched the
+# agent, which for a GUI-launched editor or a shell without nvm/asdf initialised is not this
+# one -- and the hook would then fail silently, being fail-open.
+NODE="$(command -v "$NODE")"
 
 supports_ts() {
   "$NODE" -e '
@@ -76,10 +121,23 @@ supports_ts() {
   '
 }
 
+ts_required() {
+  echo "$1 is TypeScript, which needs Node >= 22.18 or >= 23.6 to run directly." >&2
+  echo "  This is $("$NODE" -e 'process.stdout.write(process.versions.node)'). Build and register the compiled hook instead:" >&2
+  echo "  cd $HERE && npm install && npm run build && ./install.sh --$platform --dist" >&2
+  exit 1
+}
+
+hook=""
 if [ "$mode" = "install" ]; then
   case "$entry" in
     dist) hook="$HERE/dist/otel-genai-hook.js" ;;
-    source) hook="$HERE/src/otel-genai-hook.ts" ;;
+    source)
+      hook="$HERE/src/otel-genai-hook.ts"
+      # --source used to skip this check that `auto` performs, happily registering a hook
+      # this Node could never run.
+      supports_ts || ts_required "$hook"
+      ;;
     auto)
       if [ -f "$HERE/dist/otel-genai-hook.js" ]; then
         hook="$HERE/dist/otel-genai-hook.js"
@@ -96,8 +154,6 @@ if [ "$mode" = "install" ]; then
     echo "$hook does not exist" >&2
     exit 1
   fi
-else
-  hook="$HERE/dist/otel-genai-hook.js"
 fi
 
 if [ "$scope" = "global" ]; then
@@ -114,13 +170,73 @@ MODE="$mode" PLATFORM="$platform" CODEX_TARGET="$codex_target" \
 CLAUDE_TARGET="$claude_target" KIRO_TARGET="$kiro_target" KIRO_AGENT="$agent" \
 CODEX_TEMPLATE="$HERE/hooks.codex.json" CLAUDE_TEMPLATE="$HERE/hooks.claude.json" \
 KIRO_TEMPLATE="$HERE/hooks.kiro.json" NODE_COMMAND="$NODE" HOOK_PATH="$hook" \
+DRY_RUN="$dry_run" \
 "$NODE" <<'JS'
 const fs = require("node:fs");
 const path = require("node:path");
 
 const mode = process.env.MODE;
 const platform = process.env.PLATFORM;
+const dryRun = process.env.DRY_RUN === "1";
 const marker = "otel-genai-hook";
+
+/**
+ * Whether a hook entry is one of ours.
+ *
+ * There is no field to tag entries with -- both Claude Code and Kiro CLI own their config
+ * schema -- so this matches on the command. Requiring `--runtime=` alongside the file name
+ * keeps it from deleting an unrelated user hook that merely mentions this project, e.g. a
+ * wrapper script named after it. A hook file renamed by hand is still not recognized.
+ */
+const ours = (command) => {
+  const text = String(command ?? "");
+  return text.includes(marker) && text.includes("--runtime=");
+};
+
+/** Writes JSON through a temp file, so an interrupted run cannot truncate a live config. */
+const writeJson = (file, value) => {
+  if (dryRun) {
+    return;
+  }
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  fs.renameSync(temporary, file);
+};
+
+/**
+ * Keeps one copy of the file as it was before this script first touched it. Copying on every
+ * run would overwrite that with an already-patched version, leaving nothing to go back to.
+ */
+const backup = (file) => {
+  if (dryRun) {
+    return;
+  }
+  try {
+    fs.copyFileSync(file, `${file}.bak`, fs.constants.COPYFILE_EXCL);
+  } catch {
+    // A .bak already exists; it is older and therefore the more useful one.
+  }
+};
+
+/**
+ * Fills in __HOOK_COMMAND__ on the parsed template rather than on its serialized text.
+ * Substituting into the JSON source injected the path into a string literal unescaped, so a
+ * checkout path containing a quote or a backslash produced invalid JSON.
+ */
+const substituted = (value, command) => {
+  if (typeof value === "string") {
+    return value.replaceAll("__HOOK_COMMAND__", command);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => substituted(item, command));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, substituted(item, command)]),
+    );
+  }
+  return value;
+};
 
 const targets = [];
 if (platform === "codex" || platform === "all") {
@@ -143,12 +259,29 @@ const commandFor = (runtime) =>
   `${shellQuote(process.env.NODE_COMMAND)} ${shellQuote(process.env.HOOK_PATH)} --runtime=${runtime}`;
 
 const readJson = (file) => {
+  let text;
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8")) || {};
+    text = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    console.error(`cannot read ${file}: ${error.message}`);
+    process.exit(1);
+  }
+  try {
+    return JSON.parse(text) || {};
   } catch {
     console.error(`${file} is not valid JSON; fix or move it first`);
     process.exit(1);
   }
+};
+
+/** The hooks map of a template, validated up front so a bad template fails before any write. */
+const templateHooks = (file) => {
+  const hooks = readJson(file).hooks;
+  if (hooks === null || typeof hooks !== "object" || Array.isArray(hooks)) {
+    console.error(`${file} has no "hooks" object`);
+    process.exit(1);
+  }
+  return hooks;
 };
 
 /**
@@ -157,23 +290,26 @@ const readJson = (file) => {
  * the Codex / Claude `{"<event>": [{"matcher": ..., "hooks": [...]}]}`, and spread over one
  * file per agent instead of one settings file, so it gets its own pass.
  */
-const installKiro = () => {
+const kiroFiles = () => {
   const directory = process.env.KIRO_TARGET;
   const named = process.env.KIRO_AGENT;
-  let files;
   if (named) {
-    files = [path.join(directory, `${named}.json`)];
-  } else {
-    let entries = [];
-    try {
-      entries = fs.readdirSync(directory);
-    } catch {
-      entries = [];
-    }
-    files = entries
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => path.join(directory, name));
+    return [path.join(directory, `${named}.json`)];
   }
+  let entries = [];
+  try {
+    entries = fs.readdirSync(directory);
+  } catch {
+    entries = [];
+  }
+  return entries
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => path.join(directory, name));
+};
+
+const installKiro = () => {
+  const directory = process.env.KIRO_TARGET;
+  const files = kiroFiles();
   if (files.length === 0) {
     const message =
       `no agent config in ${directory}. Kiro keeps hooks per agent and its built-in\n` +
@@ -194,7 +330,9 @@ const installKiro = () => {
     if (fresh && mode !== "install") {
       continue;
     }
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+    }
     // A new config mirrors what `kiro-cli agent create` writes, so the agent behaves like
     // any other; an existing one is only ever added to.
     const config = fresh
@@ -214,15 +352,19 @@ const installKiro = () => {
         }
       : readJson(file);
     if (!fresh) {
-      fs.copyFileSync(file, `${file}.bak`);
+      backup(file);
     }
 
     const hooks = (config.hooks ??= {});
     let removed = 0;
     for (const trigger of Object.keys(hooks)) {
-      const entries = Array.isArray(hooks[trigger]) ? hooks[trigger] : [];
-      const kept = entries.filter((entry) => !String(entry?.command ?? "").includes(marker));
-      removed += entries.length - kept.length;
+      const raw = hooks[trigger];
+      if (!Array.isArray(raw)) {
+        // Not a shape this script wrote, so it is not this script's to rewrite either.
+        continue;
+      }
+      const kept = raw.filter((entry) => !ours(entry?.command));
+      removed += raw.length - kept.length;
       if (kept.length > 0) {
         hooks[trigger] = kept;
       } else {
@@ -231,12 +373,10 @@ const installKiro = () => {
     }
 
     if (mode === "install") {
-      const template = JSON.parse(fs.readFileSync(process.env.KIRO_TEMPLATE, "utf8")).hooks;
       const command = commandFor("kiro");
-      for (const [trigger, entries] of Object.entries(template)) {
+      for (const [trigger, entries] of Object.entries(templateHooks(process.env.KIRO_TEMPLATE))) {
         for (const raw of entries) {
-          const entry = JSON.parse(JSON.stringify(raw).replaceAll("__HOOK_COMMAND__", command));
-          (hooks[trigger] ??= []).push(entry);
+          (hooks[trigger] ??= []).push(substituted(raw, command));
         }
       }
     }
@@ -244,30 +384,67 @@ const installKiro = () => {
       delete config.hooks;
     }
 
-    fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-    const action = mode === "install" ? (fresh ? "created" : "installed") : "uninstalled";
+    writeJson(file, config);
+    const action = dryRun
+      ? "would update"
+      : mode === "install"
+        ? fresh
+          ? "created"
+          : "installed"
+        : "uninstalled";
     console.log(
       `  ✓ ${action} otel-genai-hook for kiro in ${file} (removed ${removed} stale entries)`,
     );
   }
 };
 
-if (platform === "kiro" || platform === "all") {
+const wantsKiro = platform === "kiro" || platform === "all";
+
+/**
+ * Reads every file this run will touch before touching any of them, so a syntax error in one
+ * config cannot leave the machine half-configured. readJson / templateHooks exit on a bad
+ * file, which is the whole point of doing it here.
+ */
+const preflight = () => {
+  if (wantsKiro) {
+    for (const file of kiroFiles()) {
+      if (fs.existsSync(file)) {
+        readJson(file);
+      }
+    }
+    if (mode === "install") {
+      templateHooks(process.env.KIRO_TEMPLATE);
+    }
+  }
+  for (const item of targets) {
+    item.exists = fs.existsSync(item.target);
+    item.config = item.exists ? readJson(item.target) : {};
+    item.templateHooks = mode === "install" ? templateHooks(item.template) : null;
+  }
+};
+
+preflight();
+
+if (wantsKiro) {
   installKiro();
 }
 
 const strip = (entries) => {
   const kept = [];
   for (const entry of entries) {
-    const inner = (entry.hooks ?? []).filter(
-      (hook) =>
-        !String(hook.command ?? "").includes(marker) &&
-        !String((hook.args ?? []).join(" ")).includes(marker),
+    const nested = Array.isArray(entry?.hooks) ? entry.hooks : null;
+    if (nested === null) {
+      // Some other shape; leave it exactly as found.
+      kept.push(entry);
+      continue;
+    }
+    const inner = nested.filter(
+      (hook) => !ours(hook?.command) && !ours((hook?.args ?? []).join(" ")),
     );
     if (inner.length > 0) {
       entry.hooks = inner;
       kept.push(entry);
-    } else if (!entry.hooks || entry.hooks.length === 0) {
+    } else if (nested.length === 0) {
       kept.push(entry);
     }
   }
@@ -275,23 +452,35 @@ const strip = (entries) => {
 };
 
 const count = (entries) =>
-  entries.reduce((total, entry) => total + (entry.hooks?.length ?? 0), 0);
+  entries.reduce(
+    (total, entry) => total + (Array.isArray(entry?.hooks) ? entry.hooks.length : 0),
+    0,
+  );
 
 for (const item of targets) {
   const target = item.target;
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  let existing = {};
-  if (fs.existsSync(target)) {
-    existing = readJson(target);
-    fs.copyFileSync(target, `${target}.bak`);
+  if (mode !== "install" && !item.exists) {
+    // Uninstalling used to *create* the file it was asked to clean, leaving behind a
+    // settings.json containing nothing but an empty hooks object.
+    console.log(`  - skipped ${item.runtime}: ${target} does not exist`);
+    continue;
+  }
+  if (!dryRun) {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+  }
+  const existing = item.config;
+  if (item.exists) {
+    backup(target);
   }
 
   const hooks = (existing.hooks ??= {});
   let removed = 0;
   for (const event of Object.keys(hooks)) {
-    const entries = Array.isArray(hooks[event]) ? hooks[event] : [];
-    const before = count(entries);
-    hooks[event] = strip(entries);
+    if (!Array.isArray(hooks[event])) {
+      continue;
+    }
+    const before = count(hooks[event]);
+    hooks[event] = strip(hooks[event]);
     removed += before - count(hooks[event]);
     if (hooks[event].length === 0) {
       delete hooks[event];
@@ -299,11 +488,10 @@ for (const item of targets) {
   }
 
   if (mode === "install") {
-    const template = JSON.parse(fs.readFileSync(item.template, "utf8")).hooks;
     const command = commandFor(item.runtime);
-    for (const [event, entries] of Object.entries(template)) {
+    for (const [event, entries] of Object.entries(item.templateHooks)) {
       for (const raw of entries) {
-        const entry = JSON.parse(JSON.stringify(raw).replaceAll("__HOOK_COMMAND__", command));
+        const entry = substituted(raw, command);
         const bucket = (hooks[event] ??= []);
         const slot = bucket.find((candidate) => (candidate.matcher ?? "") === (entry.matcher ?? ""));
         if (slot) {
@@ -314,15 +502,25 @@ for (const item of targets) {
       }
     }
   }
+  // Leave no empty `"hooks": {}` behind on uninstall, matching what the Kiro pass does.
+  if (Object.keys(hooks).length === 0) {
+    delete existing.hooks;
+  }
 
-  fs.writeFileSync(target, `${JSON.stringify(existing, null, 2)}\n`, "utf8");
-  const action = mode === "install" ? "installed" : "uninstalled";
+  writeJson(target, existing);
+  const action = dryRun ? "would update" : mode === "install" ? "installed" : "uninstalled";
   console.log(
     `  ✓ ${action} otel-genai-hook for ${item.runtime} in ${target} ` +
       `(removed ${removed} stale entries)`,
   );
 }
 JS
+
+if [ "$dry_run" = "1" ]; then
+  echo
+  echo "Dry run: nothing was written."
+  exit 0
+fi
 
 if [ "$mode" = "install" ]; then
   cat <<EOF

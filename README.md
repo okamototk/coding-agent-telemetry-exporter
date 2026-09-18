@@ -33,7 +33,7 @@ cost off the critical path is the priority.
 > double-counts everything, so enable only one of the two.
 
 > **Never register two hooks observing the same session.** Tokens and cost would be counted
-> twice. `./install.sh --uninstall` removes only this hook's entries, so if something was
+> twice. `./install.sh --all --uninstall` removes only this hook's entries, so if something was
 > registered by another route, delete it by hand from the target file
 > (`~/.codex/hooks.json` / `~/.claude/settings.json` / `~/.kiro/agents/<name>.json`).
 
@@ -82,10 +82,9 @@ offset advances byte-wise to the last newline, and the partial line is left for 
 
 ## 2. Building and installing
 
-### 2-1. Build, then install (recommended; runs on Node 18.18+)
+### 2-1. Build, then install (recommended)
 
 ```bash
-cd agents/codex/ts
 npm install          # typescript and @types/node, build-time only
 npm run build        # → dist/otel-genai-hook.js
 ./install.sh --codex   # register globally in ~/.codex/hooks.json
@@ -94,12 +93,20 @@ npm run build        # → dist/otel-genai-hook.js
 ./install.sh --all     # register in all three
 ```
 
+`npm run build` also copies `pricing.json` into `dist/`, so the built directory is
+self-contained: `dist/` alone is enough to run the hook, with the bundled rate table intact.
+
+Building and running this repo's own scripts needs Node >= 22.18 (or >= 23.6), which is what
+`package.json` declares — the sources import each other as `./x.ts` and `npm test` runs the
+`.ts` files through Node's type stripping. The **compiled** `dist/otel-genai-hook.js` is
+plain ES2022 and runs on Node 18.18+, so an older Node can still host the hook if you build
+it elsewhere.
+
 ### 2-2. Register the `.ts` directly, without building (Node 23.6+ / 22.18+)
 
 Node's type stripping runs `.ts` as-is, so even `npm install` is unnecessary.
 
 ```bash
-cd agents/codex/ts
 ./install.sh --claude --source
 ```
 
@@ -108,13 +115,30 @@ cd agents/codex/ts
 | Argument | Meaning |
 | --- | --- |
 | `--codex` / `--claude` / `--kiro` / `--all` | What to register. One is required, so nothing is registered by accident |
+| `--global` | Register for the user, in `~/.codex` / `~/.claude` / `~/.kiro` (the default) |
 | `--project` | Register per project, in `./.codex/hooks.json` |
 | `--project --claude` | Register per project, in `./.claude/settings.json` |
 | `--agent NAME` | `--kiro` only. Which agent config to patch, creating it if absent. Without it, every config already in the agents directory is patched |
 | `--dist` / `--source` | Pin which entry point is registered |
 | `--uninstall` | Remove only this hook's entries |
+| `--dry-run` | Report what would change without writing anything |
+| `--help` | Show the usage summary |
 
-An existing target file is merged rather than replaced, and a `.bak` copy is written first.
+`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and `KIRO_HOME` override where `--global` writes, and
+`NODE=/path/to/node` picks the interpreter to register. The registered command always names
+an absolute node path, so it still resolves when the agent is launched from a GUI or from a
+shell where nvm / asdf has not run.
+
+An existing target file is merged rather than replaced, never rewritten in place (a temp file
+is renamed over it), and a `.bak` copy is kept. The `.bak` is written only when there is not
+one already, so it stays the file as it was before this script first touched it rather than
+being replaced by an already-patched copy on the next run.
+
+`--uninstall` removes only entries this script wrote, recognized by a command naming the hook
+*and* a `--runtime=` flag. It never creates a config file that did not exist, and it removes
+the `hooks` key entirely once nothing is left in it. With `--all`, every target is read and
+validated before any of them is written, so a syntax error in one config cannot leave the
+others half-configured.
 
 **On first launch, Codex asks you to trust the hook.** Codex tracks trust by recording the
 hash of the hook command in `[hooks.state]` of `~/.codex/config.toml`, so the hook does not
@@ -543,10 +567,10 @@ Settings use one `CAT_OTEL_*` namespace across every supported agent.
 
 | Environment variable | Default | Description |
 | --- | --- | --- |
-| `CAT_OTEL_ENDPOINT` | `http://localhost:4318` | OTLP/HTTP destination; `/v1/traces` and `/v1/metrics` are appended automatically |
+| `CAT_OTEL_ENDPOINT` | `http://localhost:4318` | OTLP/HTTP base destination; `/v1/traces` and `/v1/metrics` are appended automatically. Also reads `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | `CAT_OTEL_METRICS` | `1` | `0` sends no metrics (traces only) |
-| `CAT_OTEL_METRICS_ENDPOINT` | same as `CAT_OTEL_ENDPOINT` | Send metrics to a separate destination. Also reads `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` |
-| `CAT_OTEL_HEADERS` | — | `k=v,k2=v2`. Also reads `OTEL_EXPORTER_OTLP_HEADERS` |
+| `CAT_OTEL_METRICS_ENDPOINT` | same as `CAT_OTEL_ENDPOINT` | Send metrics to a separate destination. A **full** URL — see below. Also reads `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` |
+| `CAT_OTEL_HEADERS` | — | `k=v,k2=v2`, values percent-encoded — see below. Also reads `OTEL_EXPORTER_OTLP_HEADERS` |
 | `CAT_OTEL_TIMEOUT` | `3` | POST timeout in seconds |
 | `CAT_OTEL_SERVICE_NAME` | per runtime | `codex`, `claude-code`, or `kiro-cli` |
 | `CAT_OTEL_RESOURCE_ATTRIBUTES` | — | Extra resource attributes |
@@ -565,8 +589,49 @@ Settings use one `CAT_OTEL_*` namespace across every supported agent.
 | `CAT_OTEL_DEBUG` | `0` | `1` logs details to `hook.log` in the state directory |
 | `CAT_OTEL_DISABLE` | `0` | `1` does nothing |
 
+The agents' own directory variables are honoured too, and decide where the state directory and
+the transcripts are looked for:
+
+| Environment variable | Default | Description |
+| --- | --- | --- |
+| `CODEX_HOME` | `~/.codex` | Codex CLI's directory |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's directory |
+| `KIRO_HOME` | `~/.kiro` | Kiro CLI's directory |
+| `CODEX_SESSIONS_DIR` | `$CODEX_HOME/sessions` | Where the rollout is searched for when the payload carries no `transcript_path` |
+| `KIRO_SESSION_ID` | set by Kiro CLI | Read, not set: Kiro's `agentSpawn` payload carries no `session_id`, so the hook falls back to what the CLI exports into its environment |
+
 Environment variables are inherited by the hook's child process, so either export them from
 `~/.zshrc` or make the registered `command` an `env VAR=... node ...` invocation.
+
+### Endpoints: base versus per-signal
+
+OTLP draws a line this hook follows. A **base** variable is an origin that `/v1/<signal>` is
+appended to; a **per-signal** variable is the complete URL and keeps whatever path it carries.
+
+| Variable | Kind |
+| --- | --- |
+| `CAT_OTEL_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT` | base |
+| `CAT_OTEL_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | per-signal |
+
+So a gateway on a custom path works: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://gw.example.com/otlp-traces`
+is used verbatim rather than becoming `.../otlp-traces/v1/traces`. Both kinds stay forgiving
+where a path cannot be meant literally — a bare origin still gets `/v1/<signal>` appended, and
+a trailing `/v1/<signal>` is normalized to the signal being sent, so pointing the metrics
+variable at a URL ending in `/v1/traces` still reaches `/v1/metrics`.
+
+### Headers are percent-encoded
+
+`CAT_OTEL_HEADERS` / `OTEL_EXPORTER_OTLP_HEADERS` follow the OTLP rule that values are
+percent-encoded (the W3C Baggage rules), which is the only way to put a `,` or `=` in one.
+Values are decoded before being sent; names are used verbatim.
+
+```bash
+export CAT_OTEL_HEADERS="Authorization=Bearer%20$TOKEN"   # sends "Bearer <token>"
+export CAT_OTEL_HEADERS="x-scope=team%2Cplatform"         # sends "team,platform"
+```
+
+A value that is not valid percent-encoding is passed through unchanged rather than dropped, so
+a literal `%` in a token still works.
 
 ### Identifying who ran the session
 
@@ -595,32 +660,57 @@ address, or using `enduser.id` alone, keeps the grouping without the mail addres
 ### Rate table
 
 `pricing.json` is in USD per 1M tokens. Keys resolve in the order **exact match → longest
-prefix match → `default`**. By default the file is looked up next to `dist/` or `src/`,
-then in the parent directory (that is, this one).
+prefix match → `default`**. By default the file is looked up next to the hook, then in the
+parent directory — so both `src/pricing.json` (the checkout) and `dist/pricing.json` (written
+by `npm run build`) are found.
 
 ```json
 {
+  "as_of": "2026-09-18",
   "currency": "USD",
   "default": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
   "per_million_tokens": {
-    "gpt-5.1-codex": { "input": 1.25, "cached_input": 0.125, "output": 10.0 }
+    "claude-sonnet-5": {
+      "input": 2.0,
+      "cached_input": 0.2,
+      "cache_creation_5m": 2.5,
+      "cache_creation_1h": 4.0,
+      "output": 10.0
+    },
+    "gpt-5-nano": { "input": 0.05, "cached_input": 0.005, "output": 0.4 }
   }
 }
 ```
 
 Cost is computed as follows, treating `input_tokens` as a total that includes
-`cached_input_tokens`.
+`cached_input_tokens` **and** `cache_creation_input_tokens`. A cache write is charged at its
+own TTL's rate, falling back to `cache_creation` and then to `input` when the table gives no
+more specific one.
 
 ```
-cost = (input_tokens - cached_input_tokens) * input        / 1e6
-     +  cached_input_tokens                 * cached_input / 1e6
-     +  output_tokens                       * output       / 1e6
+uncached = input_tokens - cached_input_tokens - cache_creation_input_tokens
+generic  = cache_creation_input_tokens
+         - cache_creation_5m_input_tokens - cache_creation_1h_input_tokens
+
+cost = uncached                        * input             / 1e6
+     + cached_input_tokens             * cached_input      / 1e6
+     + generic                         * cache_creation    / 1e6
+     + cache_creation_5m_input_tokens  * cache_creation_5m / 1e6
+     + cache_creation_1h_input_tokens  * cache_creation_1h / 1e6
+     + output_tokens                   * output            / 1e6
 ```
 
-The bundled rates are current as of the commit. **In production, point
-`CAT_OTEL_PRICING_FILE` at your own organization's table.** On a flat-rate plan (ChatGPT
-authentication) these figures are the API-rate equivalent, not what you are actually
-billed.
+**Keys are version-qualified on purpose.** A family-wide key such as `claude-haiku` prefix-
+matches every generation, so it keeps applying one generation's rates after the next one is
+priced differently — silently, and reported as `pricing_matched=true` because a key did
+match. A model the table does not cover falls to `default` and is flagged
+`{runtime}.usage.cost.pricing_matched=false` instead, which is a signal you can alert on.
+
+`as_of` records when the rates were last checked; with `CAT_OTEL_DEBUG=1` the hook notes a
+table over 180 days old, since a stale table is the one failure mode a cost figure cannot
+signal on its own. **In production, point `CAT_OTEL_PRICING_FILE` at your own organization's
+table.** On a flat-rate plan (ChatGPT authentication, a Claude subscription) these figures are
+the API-rate equivalent, not what you are actually billed.
 
 ---
 
@@ -722,7 +812,7 @@ A healthy turn logs `event=stop deferred` (the hook Kiro waits on) followed by
 
 | Topic | Implementation |
 | --- | --- |
-| Runtime | Node 18.18+ (23.6+ / 22.18+ to run `.ts` directly). Zero runtime dependencies |
+| Runtime | Node 22.18+ / 23.6+ to build and test this repo, or to run `.ts` directly; the compiled `dist/` output runs on Node 18.18+. Zero runtime dependencies |
 | Sending | OTLP/HTTP (JSON) POSTed via `node:http` / `node:https`, with an explicit `Content-Length` and a timeout. Traces and metrics are separate signals, so they go in parallel |
 | Metric aggregation | Within one hook event, measurements sharing attributes collapse into one data point and are sent as a delta histogram (`count` / `sum` / `min` / `max` / `bucketCounts`). Nothing accumulates across processes |
 | Timestamp precision | `Date.now()` (millisecond precision) converted to ns. Timestamps from the rollout are recovered to ns from the ISO 8601 fractional part |
@@ -759,6 +849,18 @@ src/types.ts             Types for the payload, state, and usage
   its `chat` span and in the internal session totals, but is not reflected in the totals of
   the turn span already sent. Turn span IDs are deterministic, so sending a second one
   would be a duplicate.
+- **`chat` span IDs are derived from the request, not from a counter.** Claude Code uses the
+  Anthropic `message.id`, Codex the `token_count` record's byte offset in the rollout, and Kiro
+  the turn plus the request's position in it. A counter in the state file would be handed to
+  two concurrent hook processes at once — parallel Claude Code subagents make that routine —
+  and they would emit two different spans under one span ID. A session that spans an upgrade
+  from before this change will see its `chat` span IDs shift; turn and tool span IDs do not.
+- **Concurrent hook processes are serialized on the state file.** Load-modify-save is guarded
+  by a lock file, because without it two overlapping processes could each load before the
+  other saved and the second write would discard the first — losing a whole subagent's tokens
+  and cost. The lock is advisory and given 50 ms: if it cannot be taken the hook proceeds
+  anyway, since it must never hold up a turn. The window where an update could still be lost
+  is then what it was before, and `CAT_OTEL_DEBUG=1` records it.
 - **On older Codex versions every request collapses into one turn.** Only recent versions
   put `turn_id` in `token_count` / `turn_context`; without it the hook falls back to the
   hook payload's `turn_id`.

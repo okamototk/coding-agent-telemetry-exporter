@@ -62,18 +62,26 @@
  * it exits 0 and never halts the agent's session.
  *
  * Environment variables:
- *     CAT_OTEL_ENDPOINT               OTLP/HTTP destination. Default http://localhost:4318
- *                                     (also reads OTEL_EXPORTER_OTLP_TRACES_ENDPOINT /
- *                                      OTEL_EXPORTER_OTLP_ENDPOINT)
+ *     CAT_OTEL_ENDPOINT               OTLP/HTTP base destination, /v1/<signal> appended.
+ *                                     Default http://localhost:4318 (also reads
+ *                                     OTEL_EXPORTER_OTLP_ENDPOINT; the per-signal
+ *                                     OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is a full URL and
+ *                                     keeps its own path)
  *     CAT_OTEL_METRICS                0 to stop sending metrics (default 1)
- *     CAT_OTEL_METRICS_ENDPOINT       Send metrics to a separate destination
+ *     CAT_OTEL_METRICS_ENDPOINT       Send metrics to a separate destination, as a full URL
  *                                     (also reads OTEL_EXPORTER_OTLP_METRICS_ENDPOINT)
- *     CAT_OTEL_HEADERS                Extra headers, "k=v,k2=v2"
+ *     CAT_OTEL_HEADERS                Extra headers, "k=v,k2=v2"; values are
+ *                                     percent-encoded, per OTLP
  *                                     (also reads OTEL_EXPORTER_OTLP_HEADERS)
  *     CAT_OTEL_TIMEOUT                POST timeout in seconds. Default 3
  *     CAT_OTEL_SERVICE_NAME           service.name. Default codex / claude-code / kiro-cli
  *     CAT_OTEL_RESOURCE_ATTRIBUTES    Extra resource attributes, "k=v,k2=v2"
  *                                     (also reads OTEL_RESOURCE_ATTRIBUTES)
+ *     CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES
+ *                                     0 to stop copying those attributes onto every metric
+ *                                     data point; they stay on the resource either way
+ *                                     (default 1, also reads
+ *                                      OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES)
  *     CAT_OTEL_PRICING_FILE           Path to the rate table JSON. Default: the bundled
  *                                     pricing.json
  *     CAT_OTEL_COST_SEMCONV           0 to stop emitting the draft gen_ai.usage.cost.*
