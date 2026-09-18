@@ -84,6 +84,17 @@ export function mapUsage(pick: (key: UsageKey) => number): Usage {
 
 /** One token_count record in the rollout = one LLM request. */
 export interface RolloutRequest {
+  /**
+   * A key identifying this request within the session, used to derive its span ID. Null when
+   * the source offers nothing stable, in which case a counter is used instead.
+   *
+   * It must not depend on how many requests a process happened to see: the hook runs as one
+   * process per event, several of which can run at once (parallel Claude Code subagents), and
+   * a counter shared through the state file hands the same value to two of them — which then
+   * emit two different spans under one span ID. Something derived from the request itself
+   * cannot collide that way. The value is namespaced by source, so the schemes cannot meet.
+   */
+  spanKey: string | null;
   endNs: bigint | null;
   turnId: string | null;
   model: string | null;

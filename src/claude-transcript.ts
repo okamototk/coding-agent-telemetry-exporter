@@ -317,6 +317,9 @@ export function drainClaudeTranscript(
 
   for (const group of groups.values()) {
     requests.push({
+      // The Anthropic message.id, which identifies one API response: the strongest key
+      // available, since the provider issued it and it is already what groups these lines.
+      spanKey: `msg:${group.id}`,
       endNs: group.endNs,
       turnId: group.turnId,
       model: group.model,

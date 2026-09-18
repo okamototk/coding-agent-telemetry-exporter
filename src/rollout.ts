@@ -268,6 +268,9 @@ export function drainRollout(path: string, offset: number, captureMessages = fal
     }
     const lineEnd = readStart + newline + 1;
     const active = lineEnd > previousOffset;
+    // Where this line starts in the file. The rollout is append-only, so a record keeps its
+    // offset for the life of the file, which makes it a stable identity for the record.
+    const lineOffset = readStart + lineStart;
     const text = buffer.subarray(lineStart, newline).toString("utf8").trim();
     lineStart = newline + 1;
     if (!text) {
@@ -429,6 +432,10 @@ export function drainRollout(path: string, offset: number, captureMessages = fal
     const contextWindow = usage["model_context_window"];
     if (active) {
       requests.push({
+        // Codex issues no request id, so the record's own position in the rollout is the
+        // identity. Two rollouts of one session (after a resume or /clear) can reuse an
+        // offset, but they carry different turn ids and so land in different traces.
+        spanKey: `off:${lineOffset}`,
         endNs: isoToNs(entry["timestamp"]),
         turnId: asString(body["turn_id"]) ?? turnId,
         model: asString(body["model"]) ?? model,

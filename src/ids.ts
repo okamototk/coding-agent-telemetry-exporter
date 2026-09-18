@@ -25,8 +25,17 @@ export function turnSpanId(sessionId: string, turnId: string, runtime: AgentRunt
   return hexId(runtime, "turn", [sessionId, turnId], 8);
 }
 
-export function llmSpanId(sessionId: string, seq: number, runtime: AgentRuntime = "codex"): string {
-  return hexId(runtime, "llm", [sessionId, String(seq)], 8);
+/**
+ * The span ID for one LLM request. `key` identifies the request within the session: prefer
+ * something derived from the request itself (`RolloutRequest.spanKey`) over a counter, which
+ * two concurrent hook processes can hand out twice.
+ */
+export function llmSpanId(
+  sessionId: string,
+  key: string | number,
+  runtime: AgentRuntime = "codex",
+): string {
+  return hexId(runtime, "llm", [sessionId, String(key)], 8);
 }
 
 export function toolSpanId(sessionId: string, callId: string, runtime: AgentRuntime = "codex"): string {

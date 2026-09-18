@@ -311,6 +311,7 @@ function syncRollout(
     const startNs = candidateStart > endNs ? endNs : candidateStart;
     previousEnd.set(turnId, endNs);
 
+    // The counter is only a fallback now, for a source that offers no key of its own.
     seq += 1;
     const { attributes, event } = inferenceAttrs({
       pairs: [
@@ -329,7 +330,7 @@ function syncRollout(
     spans.push(
       span({
         traceId: traceId(state.session_id, turnId, state.runtime),
-        spanId: llmSpanId(state.session_id, seq, state.runtime),
+        spanId: llmSpanId(state.session_id, request.spanKey ?? seq, state.runtime),
         parentSpanId: turnSpanId(state.session_id, turnId, state.runtime),
         name: model ? `chat ${model}` : "chat",
         startNs,

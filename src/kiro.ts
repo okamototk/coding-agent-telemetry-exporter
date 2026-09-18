@@ -619,7 +619,6 @@ function handleStop(
   const windows = requestWindows(startNs, endNs, tools, count);
 
   const spans: OtlpSpan[] = [];
-  let seq = state.llm_seq;
   let costTotal = 0;
   for (let index = 0; index < count; index += 1) {
     const [chatStart, chatEnd] = windows[index] ?? [startNs, endNs];
@@ -627,7 +626,6 @@ function handleStop(
     const amount = credits[index] ?? 0;
     const breakdown = creditCost(amount, pricing) ?? cost(usage, model, pricing);
     costTotal += breakdown.totalCost;
-    seq += 1;
     const { attributes, event } = inferenceAttrs({
       pairs: [
         ...commonAttrs(state, payload, model),
@@ -649,7 +647,10 @@ function handleStop(
     spans.push(
       span({
         traceId: traceId(state.session_id, turnId, "kiro"),
-        spanId: llmSpanId(state.session_id, seq, "kiro"),
+        // Kiro issues no request id either, but a turn's requests are reconstructed in a
+        // fixed order, so the turn plus the position in it identifies one -- the same scheme
+        // the tool spans use above, and one no counter has to be shared for.
+        spanId: llmSpanId(state.session_id, `turn:${turnId}:${index}`, "kiro"),
         parentSpanId: turnSpanId(state.session_id, turnId, "kiro"),
         name: model ? `chat ${model}` : "chat",
         startNs: chatStart,
@@ -672,7 +673,6 @@ function handleStop(
       tokens: summary.tokensReported,
     });
   }
-  state.llm_seq = seq;
 
   const turnCredits = summary.credits.reduce((total, value) => total + value, 0);
   const turnCost = creditCost(turnCredits, pricing) ?? cost(summary.usage, model, pricing);
