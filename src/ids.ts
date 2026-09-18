@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import type { AgentRuntime } from "./types.ts";
 
 function hexId(runtime: AgentRuntime, kind: string, parts: readonly string[], size: number): string {
-  const namespace = runtime === "codex" ? "codex-otel" : "claude-otel";
+  const namespace = `${runtime}-otel`;
   const digest = createHash("sha256")
     .update(`${namespace}:${kind}:${parts.join("\x1f")}`, "utf8")
     .digest("hex");

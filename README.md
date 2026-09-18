@@ -2,10 +2,11 @@
 
 Token usage and cost as OTel GenAI traces (TypeScript).
 
-**Supported agents: Codex CLI / Claude Code**
+**Supported agents: Codex CLI / Claude Code / Kiro CLI**
 
 Runs as a coding agent's command hook, turning **input / output tokens** (the whole prompt:
-system prompt, conversation history, and user prompt) and **cost** into
+system prompt, conversation history, and user prompt) — or **credits**, where that is what the
+agent meters — and **cost** into
 [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 span attributes, then sending them to an OTel Collector over OTLP/HTTP. The same
 observations also produce the semconv **GenAI metrics** — histograms of token counts,
@@ -15,6 +16,12 @@ durations, call counts, and cost.
 hook event → stdin(JSON) → otel-genai-hook → OTLP/HTTP(JSON) → OTel Collector
                                              (/v1/traces and /v1/metrics)
 ```
+
+| Agent | Registered in | Usage comes from |
+| --- | --- | --- |
+| Codex CLI | `~/.codex/hooks.json` | the rollout JSONL's `token_count` records |
+| Claude Code | `~/.claude/settings.json` | the transcript JSONL's `message.usage` |
+| Kiro CLI | `~/.kiro/agents/<name>.json` | the session store's per-turn credits |
 
 Zero runtime dependencies: `node:*` standard modules only. Neither an OTel SDK nor
 `node_modules` is needed at run time; `typescript` and `@types/node` are devDependencies for
@@ -28,7 +35,11 @@ cost off the critical path is the priority.
 > **Never register two hooks observing the same session.** Tokens and cost would be counted
 > twice. `./install.sh --uninstall` removes only this hook's entries, so if something was
 > registered by another route, delete it by hand from the target file
-> (`~/.codex/hooks.json` / `~/.claude/settings.json`).
+> (`~/.codex/hooks.json` / `~/.claude/settings.json` / `~/.kiro/agents/<name>.json`).
+
+> **Kiro CLI meters credits, not tokens.** Its service reports what a turn consumed in plan
+> credits and leaves the token counts at zero, so the usage attribute to read there is
+> `kiro.usage.credits`. See §2, "Kiro CLI".
 
 ---
 
@@ -79,7 +90,8 @@ npm install          # typescript and @types/node, build-time only
 npm run build        # → dist/otel-genai-hook.js
 ./install.sh --codex   # register globally in ~/.codex/hooks.json
 ./install.sh --claude  # register globally in ~/.claude/settings.json
-./install.sh --all     # register in both
+./install.sh --kiro --agent my-agent  # register in ~/.kiro/agents/my-agent.json
+./install.sh --all     # register in all three
 ```
 
 ### 2-2. Register the `.ts` directly, without building (Node 23.6+ / 22.18+)
@@ -95,9 +107,10 @@ cd agents/codex/ts
 
 | Argument | Meaning |
 | --- | --- |
-| `--codex` / `--claude` / `--all` | What to register. One is required, so nothing is registered by accident |
+| `--codex` / `--claude` / `--kiro` / `--all` | What to register. One is required, so nothing is registered by accident |
 | `--project` | Register per project, in `./.codex/hooks.json` |
 | `--project --claude` | Register per project, in `./.claude/settings.json` |
+| `--agent NAME` | `--kiro` only. Which agent config to patch, creating it if absent. Without it, every config already in the agents directory is patched |
 | `--dist` / `--source` | Pin which entry point is registered |
 | `--uninstall` | Remove only this hook's entries |
 
@@ -121,7 +134,8 @@ Four events are registered with Codex. Claude Code gets those same four plus
 | `SubagentStop` (Claude) | Reads `agent_transcript_path` and folds the subagent's usage into the parent `prompt_id` |
 
 Tool calls are recovered from the rollout's `function_call` / `function_call_output`, so
-there is no need to register `PreToolUse` / `PostToolUse` as well.
+there is no need to register `PreToolUse` / `PostToolUse` as well. Kiro CLI is different on
+both counts — see §2, "Kiro CLI".
 
 ### Claude Code transcript
 
@@ -132,6 +146,89 @@ into several records — one per thinking / text / tool_use block — each repea
 Usage is converted to the canonical form from `input_tokens`, `cache_read_input_tokens`,
 `cache_creation_input_tokens`, and `output_tokens`. The 5-minute and 1-hour cache creation
 counts and the thinking tokens are sent as separate attributes.
+
+### Kiro CLI
+
+Kiro CLI declares hooks **inside an agent config**, not in one settings file — and its
+built-in `kiro_default` agent carries no config to add them to. So `--kiro` patches the
+configs in `~/.kiro/agents` (`./.kiro/agents` with `--project`), and the session has to run on
+one of them:
+
+```bash
+./install.sh --kiro --agent my-agent   # creates it if it does not exist yet
+kiro-cli chat --agent my-agent         # or, once: kiro-cli agent set-default my-agent
+```
+
+All five of Kiro's triggers are registered. Unlike the other two agents, tool calls come from
+the hooks rather than from a file, because Kiro's own transcript records no per-tool timing.
+
+| Trigger | What it does |
+| --- | --- |
+| `agentSpawn` | Records the session start and aligns the session-store position, so a resumed session does not replay its history |
+| `userPromptSubmit` | Opens a turn (`t1`, `t2`, ...) and, if opted in, records the prompt text |
+| `preToolUse` | Opens a tool execution |
+| `postToolUse` | Closes it and sends the `execute_tool` span |
+| `stop` | Sends the LLM request spans and the turn span, from the session store |
+
+**Anything a Kiro hook prints on stdout is fed back to the model as additional context**, so
+this hook prints nothing at all on that path.
+
+#### Why `stop` runs in a detached process
+
+Kiro's hook payload carries no usage — `stop` delivers only `hook_event_name`, `cwd`,
+`session_id`, and `assistant_response` — so a turn's totals come from the session state Kiro
+writes itself, `~/.kiro/sessions/cli/<session_id>.json`:
+
+```json
+{"session_state": {"conversation_metadata": {"user_turn_metadatas": [{
+  "total_request_count": 3, "builtin_tool_uses": 2,
+  "turn_duration": {"secs": 6, "nanos": 696208620},
+  "end_timestamp": "2026-09-17T11:22:02.729244299Z",
+  "input_token_count": 0, "output_token_count": 0, "model": "auto",
+  "metering_usage": [{"value": 0.047, "unit": "credit"}, {"value": 0.031, ...}]}]}}}
+```
+
+**Kiro persists that file only after every `stop` hook has returned** (measured: ~20 ms after
+the hook process exited). A `stop` hook can therefore never read its own turn, no matter how
+long it waits. So `stop` is handed to a detached copy of the hook, which does the waiting
+where Kiro is not waiting on it; the hook Kiro *is* waiting on returns immediately and adds no
+latency to the turn. `CAT_OTEL_KIRO_STORE_WAIT_MS` caps that wait, and
+`CAT_OTEL_KIRO_DEFER=0` keeps `stop` inline instead — which then blocks the turn for the wait
+and still misses the last turn of a session.
+
+If a turn's metadata never shows up, the turn is still reported from what the hooks
+themselves saw — the boundary, its duration, its tool calls — with the usage attributes left
+off rather than sent as zeros, and `kiro.llm.request.count` absent because the count is
+unknown, not zero. No `chat` span is built. The store position does not advance, so usage
+that lands later joins the next turn.
+
+#### Credits, not tokens
+
+Kiro's service meters plan **credits** and leaves `input_token_count` / `output_token_count`
+at zero, one `metering_usage` entry per request. Credits are neither tokens nor money, so:
+
+- they are reported as they are, on `kiro.usage.credits` and the `kiro.client.credit.usage`
+  metric — the one usage figure in this hook that a provider actually measured rather than
+  something derived from a rate table;
+- the token attributes are **omitted entirely** rather than sent as zeros, which would read as
+  "free" instead of "not reported";
+- money appears only if you say what a credit costs: `CAT_OTEL_KIRO_CREDIT_USD=0.02` turns
+  the credits into `gen_ai.usage.cost.amount` / `kiro.usage.cost`. Unset, no monetary figure
+  is invented. Should Kiro ever report token counts, they are priced from `pricing.json` as
+  usual, and the per-turn totals are apportioned over the turn's requests by credit share
+  (flagged `kiro.usage.tokens.apportioned`).
+
+#### Where the `chat` spans sit
+
+The store summarizes a whole turn, so the per-request boundaries are reconstructed from the
+tool executions the hooks timed. An agent loop alternates request → tool batch → request, so
+N batches leave N+1 gaps — and `total_request_count` equalled `batches + 1` in every session
+measured, with one credit amount per request.
+
+```
+turn start ──chat── tool tool ──chat── tool ──chat── turn end
+                   └─ batch 1 ─┘      └batch 2┘
+```
 
 ---
 
@@ -183,9 +280,11 @@ still under review puts in the registry — see
 | `codex.usage.uncached_input_tokens` | `input_tokens - cached_input_tokens`: the billable uncached share. **LLM request spans only** |
 | `codex.usage.total_tokens` | input + output. Absent from the semconv registry, hence the runtime prefix |
 | `codex.usage.cost` | Estimated cost. **An extension attribute, undefined in the released semconv** |
-| `codex.usage.input_cost` / `codex.usage.output_cost` | The cost breakdown (the input side already has cache rates applied) |
+| `codex.usage.input_cost` / `codex.usage.output_cost` | The cost breakdown (the input side already has cache rates applied). Omitted when the amount was metered rather than derived from per-token rates |
 | `codex.usage.cost.currency` | Default `USD` |
-| `codex.usage.cost.pricing_matched` | `false` signals the model was not in the rate table and `default` rates were used |
+| `codex.usage.cost.pricing_matched` | `false` signals the model was not in the rate table and `default` rates were used. Omitted for a metered amount, where no rate table applies |
+| `kiro.usage.credits` | **Kiro only.** The plan credits the operation consumed, exactly as Kiro metered them. The token attributes above are absent whenever Kiro reported no token counts |
+| `kiro.usage.tokens.apportioned` | **Kiro only.** `true` on a `chat` span whose token counts are this hook's credit-weighted share of a per-turn total |
 | `gen_ai.usage.cost.amount` | The same cost under the semconv name. **From an unmerged draft; see below. LLM request spans only** |
 | `gen_ai.usage.cost.currency` | ISO 4217 code, Conditionally Required by the draft whenever the amount is set. **LLM request spans only** |
 | `gen_ai.usage.cost.source` | Always `local`: this hook derives cost from `pricing.json` rather than reading a charged amount off the response. **LLM request spans only** |
@@ -244,8 +343,8 @@ limited to **information the registry cannot express**.
 | Attribute | Contents |
 | --- | --- |
 | `gen_ai.operation.name` | `invoke_agent` / `chat` / `execute_tool` |
-| `gen_ai.provider.name` | The rollout's `model_provider`, usually `openai` |
-| `gen_ai.agent.name` | `codex` / `claude-code`. **On spans from a subagent, its `agent_type`** (`general-purpose` and the like) |
+| `gen_ai.provider.name` | The rollout's `model_provider`, usually `openai`; `anthropic` for Claude Code, `kiro` for Kiro CLI. `kiro` is not one of semconv's well-known values, deliberately: the Kiro service fronts several model families (Claude, DeepSeek, MiniMax, GLM, Qwen), so no upstream provider describes it, and semconv permits a value outside the list |
+| `gen_ai.agent.name` | `codex` / `claude-code`; for Kiro, **the agent the session runs** (`kiro_default`, or whatever `~/.kiro/agents/<name>.json` declares), which is the agent in semconv's sense more precisely than the CLI is. **On spans from a subagent, its `agent_type`** (`general-purpose` and the like) |
 | `gen_ai.agent.version` | The CLI version (`session_meta.cli_version`). Codex only |
 | `gen_ai.conversation.id` | Codex's `session_id` |
 | `session.id` | A vendor-neutral identifier that groups per-turn traces into one session |
@@ -264,6 +363,8 @@ The custom attributes that remain, and why:
 | `codex.llm.request.count` / `codex.tool.call.count` | The same values exist as the `gen_ai.invoke_agent.inference_calls` / `tool_calls` metrics, but there is no span-attribute definition |
 | `codex.cwd` / `codex.originator` / `codex.permission_mode` | No attributes for the working directory, the calling UI, or the permission mode |
 | `claude.agent.id` | `gen_ai.agent.id` is a stable, provider-issued agent resource ID; putting a transient in-process instance ID there is NOT RECOMMENDED |
+| `kiro.llm.request.attempts` | Requests Kiro actually sent, retries included; higher than `kiro.llm.request.count` when a request was retried. No semconv attribute counts attempts |
+| `kiro.context.usage_percentage` / `kiro.turn.end_reason` | How full the context window was at the end of the turn, and how the turn ended. Neither has a semconv counterpart |
 
 Leaving `gen_ai.request.model` off the turn span is what semconv prescribes. On an
 invoke_agent internal span, `gen_ai.request.model` applies only when the agent is configured
@@ -395,6 +496,7 @@ histograms, with the bucket boundaries semconv lists as SHOULD.
 | `gen_ai.invoke_agent.inference_calls` | `{inference_call}` | LLM requests in that turn | `gen_ai.agent.name` |
 | `gen_ai.invoke_agent.tool_calls` | `{tool_call}` | Tool calls in that turn | `gen_ai.agent.name` |
 | `gen_ai.execute_tool.duration` | `s` | `execute_tool` span duration | `gen_ai.tool.name`, `gen_ai.tool.type`, `gen_ai.agent.name`, `error.type` |
+| `kiro.client.credit.usage` | `{credit}` | Credits one LLM request consumed. **Kiro only, and an extension**: semconv has no credit metric, and credits fit neither `gen_ai.client.token.usage` nor `gen_ai.client.operation.cost` | The `operation.duration` set |
 
 **Temporality is delta (`aggregationTemporality: 1`).** The hook runs as one process per
 event and cannot carry the previous value forward, so cumulative is not an option. Only
@@ -446,7 +548,7 @@ Settings use one `CAT_OTEL_*` namespace across every supported agent.
 | `CAT_OTEL_METRICS_ENDPOINT` | same as `CAT_OTEL_ENDPOINT` | Send metrics to a separate destination. Also reads `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` |
 | `CAT_OTEL_HEADERS` | — | `k=v,k2=v2`. Also reads `OTEL_EXPORTER_OTLP_HEADERS` |
 | `CAT_OTEL_TIMEOUT` | `3` | POST timeout in seconds |
-| `CAT_OTEL_SERVICE_NAME` | per runtime | `codex` or `claude-code` |
+| `CAT_OTEL_SERVICE_NAME` | per runtime | `codex`, `claude-code`, or `kiro-cli` |
 | `CAT_OTEL_RESOURCE_ATTRIBUTES` | — | Extra resource attributes |
 | `CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES` | `1` | `0` stops copying those attributes onto the metric data points (they stay on the resource). Also reads `OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES` |
 | `CAT_OTEL_PRICING_FILE` | the bundled `pricing.json` | Rate table |
@@ -455,7 +557,11 @@ Settings use one `CAT_OTEL_*` namespace across every supported agent.
 | `CAT_OTEL_CAPTURE_PROMPTS` | `0` | `1` puts prompt and response content on the spans |
 | `CAT_OTEL_MESSAGES_MODE` | `attribute` | Where attributes semconv also defines on the event (content, model name, token counts, ...) go: `attribute` (span attributes) / `event` (trace event) / `both`. An unknown value is treated as `attribute` |
 | `CAT_OTEL_CONTENT_MAX_CHARS` | `20000` | Per-attribute limit for captured content |
-| `CAT_OTEL_STATE_DIR` | per runtime | `~/.codex/otel-genai-hook` or `~/.claude/otel-genai-hook` |
+| `CAT_OTEL_STATE_DIR` | per runtime | `~/.codex/otel-genai-hook`, `~/.claude/otel-genai-hook`, or `~/.kiro/otel-genai-hook` |
+| `CAT_OTEL_KIRO_CREDIT_USD` | — | Kiro only. What one credit costs. Unset, no monetary cost is reported and only `kiro.usage.credits` is |
+| `CAT_OTEL_KIRO_SESSIONS_DIR` | `$KIRO_HOME/sessions/cli` | Kiro only. Where the session store lives; point it at `~/.aws/amazonq/sessions/cli` on the legacy layout |
+| `CAT_OTEL_KIRO_STORE_WAIT_MS` | `2000` | Kiro only. How long to wait for the session store to be written after a turn |
+| `CAT_OTEL_KIRO_DEFER` | `1` | Kiro only. `0` handles `stop` inline instead of in a detached process, which blocks the turn for the wait above and still misses the last turn |
 | `CAT_OTEL_DEBUG` | `0` | `1` logs details to `hook.log` in the state directory |
 | `CAT_OTEL_DISABLE` | `0` | `1` does nothing |
 
@@ -551,6 +657,13 @@ structure, tokens, cost (both the extension and the draft `gen_ai.usage.cost.*` 
 their opt-out and breakdown flags), deduplication, content capture, and metrics (destination
 path, units, delta temporality, buckets matching boundaries, attribute cardinality).
 
+The Kiro path is covered against a synthetic session store: the trigger sequence through
+`agentSpawn → userPromptSubmit → preToolUse → postToolUse → stop`, the credit attributes and
+metric, the request windows falling in the gaps between tool executions, the apportioned token
+counts, the resumed-session guard, and the detached `stop` — that one runs the real hook as a
+subprocess, asserts it exports nothing itself and prints nothing, then waits for the detached
+copy to export once the store appears.
+
 ```bash
 npm test           # runs src/*.ts directly (Node 23.6+ / 22.18+)
 npm run test:dist  # builds first, then checks dist/*.js
@@ -585,6 +698,24 @@ If no spans arrive, work through this order:
    Check `CODEX_HOME` / `CODEX_SESSIONS_DIR`
 3. `export failed` / `export http error` → a Collector-side problem
 
+### 7-4. Through Kiro CLI
+
+```bash
+kiro-cli chat --agent my-agent   # the agent whose config the hook was installed into
+cat ~/.kiro/otel-genai-hook/hook.log
+```
+
+A healthy turn logs `event=stop deferred` (the hook Kiro waits on) followed by
+`event=stop spans=N` (the detached copy).
+
+1. Empty `hook.log` → the session is running an agent without the hooks. `kiro-cli chat
+   --agent <name>`, and check `/hooks` in the session
+2. `session store did not report a turn` → nothing was written to
+   `~/.kiro/sessions/cli/<session_id>.json`. Either the session is on `--classic` (not
+   covered, see §9) or the store lives elsewhere — set `CAT_OTEL_KIRO_SESSIONS_DIR`
+3. Turn spans arrive but carry no cost → expected. Kiro meters credits; set
+   `CAT_OTEL_KIRO_CREDIT_USD` to convert them
+
 ---
 
 ## 8. Implementation notes
@@ -605,6 +736,8 @@ Source layout:
 src/otel-genai-hook.ts   Entry point: event handlers and span assembly
 src/rollout.ts           Resolving, advancing through, and deduplicating the Codex rollout JSONL
 src/claude-transcript.ts Advancing through and deduplicating the Claude transcript and subagents
+src/kiro.ts              Kiro's hook triggers: span assembly, tool brackets, deferred stop
+src/kiro-session.ts      Advancing through the Kiro CLI session store (per-turn credits)
 src/otlp.ts              Assembling and POSTing OTLP/HTTP (JSON)
 src/spans.ts             Mapping onto the GenAI semconv (routing attributes and trace events)
 src/metrics.ts           Aggregating and sending the GenAI semconv metrics (delta histograms)
@@ -661,7 +794,22 @@ src/types.ts             Types for the payload, state, and usage
   duration metric do separate per subagent, via `gen_ai.agent.name`.
 - **Cost is an estimate.** It is rate-table based and reflects no plan contract, tier, or
   price cut. A span with `codex.usage.cost.pricing_matched=false` had a model name missing
-  from the table.
+  from the table. Kiro is the exception: its credits are metered by the service, and the only
+  local part is the credit-to-money rate you supply.
+- **Kiro's usage is not available on the classic UI.** `kiro-cli chat --classic` (the legacy V2
+  UI) keeps its conversation state in `~/.local/share/kiro-cli/data.sqlite3` and never writes
+  the session store, so credits, cost, and the `chat` spans are all missing there. The turn and
+  `execute_tool` spans still arrive, with durations and tool counts, because they come from the
+  hooks alone. The default interactive UI and `--no-interactive` both write the session store
+  and are fully covered.
+- **Kiro reports usage per turn, not per request.** So a `chat` span's window is reconstructed
+  from the tool executions around it, and its token counts — when Kiro reports any — are a
+  credit-weighted share of the turn total, marked `kiro.usage.tokens.apportioned=true`. The
+  credits themselves are exact, one metered amount per request. Its per-turn totals are exact
+  as well.
+- **A Kiro tool span's duration includes the hook's own startup.** It is measured from
+  `preToolUse` to `postToolUse`, each of which starts a Node process; the two startup costs
+  largely cancel, leaving an error on the order of tens of milliseconds.
 
 ---
 

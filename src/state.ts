@@ -11,6 +11,7 @@ import {
   type HookState,
   type RolloutContext,
   type SerializedTurnBucket,
+  type ToolWindow,
   type TranscriptCursor,
   type TurnState,
   type Usage,
@@ -75,6 +76,11 @@ function freshState(sessionId: string, runtime: AgentRuntime): HookState {
     rollout_context: {},
     transcript_cursors: {},
     pending_turns: {},
+    turn_seq: 0,
+    turn_metadata_offset: 0,
+    store_synced: false,
+    open_tools: [],
+    turn_tools: {},
   };
 }
 
@@ -84,6 +90,16 @@ function cursorsOf(raw: unknown): Record<string, TranscriptCursor> {
 
 function pendingTurnsOf(raw: unknown): Record<string, SerializedTurnBucket> {
   return raw && typeof raw === "object" ? (raw as Record<string, SerializedTurnBucket>) : {};
+}
+
+function toolWindowsOf(raw: unknown): Record<string, ToolWindow[]> {
+  const out: Record<string, ToolWindow[]> = {};
+  if (raw && typeof raw === "object") {
+    for (const [turnId, value] of Object.entries(raw as Record<string, unknown>)) {
+      out[turnId] = Array.isArray(value) ? (value as ToolWindow[]) : [];
+    }
+  }
+  return out;
 }
 
 export function loadState(sessionId: string, runtime: AgentRuntime = "codex"): HookState {
@@ -116,6 +132,11 @@ export function loadState(sessionId: string, runtime: AgentRuntime = "codex"): H
     rollout_context: (saved.rollout_context as RolloutContext | undefined) ?? {},
     transcript_cursors: cursorsOf(saved.transcript_cursors),
     pending_turns: pendingTurnsOf(saved.pending_turns),
+    turn_seq: toInt(saved.turn_seq),
+    turn_metadata_offset: toInt(saved.turn_metadata_offset),
+    store_synced: saved.store_synced === true,
+    open_tools: Array.isArray(saved.open_tools) ? saved.open_tools : [],
+    turn_tools: toolWindowsOf(saved.turn_tools),
   };
 }
 

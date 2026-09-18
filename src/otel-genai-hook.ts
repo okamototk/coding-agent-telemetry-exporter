@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * A coding-agent hook that exports token usage and cost as OTel GenAI traces.
- * Supported agents: Codex CLI / Claude Code
+ * Supported agents: Codex CLI / Claude Code / Kiro CLI
  *
  * Each CLI's command hook passes JSON on stdin and waits for the process to exit. The hook
  * therefore runs on Node's standard modules alone: it assembles OTLP/HTTP (JSON) itself and
@@ -39,9 +39,15 @@
  * `codex.usage.uncached_input_tokens`. Output includes reasoning tokens, broken out as
  * `gen_ai.usage.reasoning.output_tokens`.
  *
+ * Kiro CLI works the same way with a different source and a different unit: its hooks carry
+ * no usage either, so the turn totals come from the session store it writes itself
+ * (`~/.kiro/sessions/cli/<session_id>.json`), and its tool spans come from the
+ * `preToolUse` / `postToolUse` triggers. Kiro meters **credits**, not tokens — see kiro.ts.
+ *
  * Cost is not in the released semconv, so it is reported through the `codex.usage.cost` /
- * `claude.usage.cost` extension attributes (`gen_ai.*` is OTel's namespace and takes no
- * custom attributes). Alongside them, the cost mapping of the **unmerged draft**
+ * `claude.usage.cost` / `kiro.usage.cost` extension attributes (`gen_ai.*` is OTel's
+ * namespace and takes no custom attributes). Alongside them, the cost mapping of the
+ * **unmerged draft**
  * https://github.com/open-telemetry/semantic-conventions-genai/pull/443 is emitted on the
  * chat spans — `gen_ai.usage.cost.amount` / `.currency` / `.source` plus the
  * `gen_ai.client.operation.cost` metric — which CAT_OTEL_COST_SEMCONV=0 turns off. The rate
@@ -65,7 +71,7 @@
  *     CAT_OTEL_HEADERS                Extra headers, "k=v,k2=v2"
  *                                     (also reads OTEL_EXPORTER_OTLP_HEADERS)
  *     CAT_OTEL_TIMEOUT                POST timeout in seconds. Default 3
- *     CAT_OTEL_SERVICE_NAME           service.name. Default codex / claude-code
+ *     CAT_OTEL_SERVICE_NAME           service.name. Default codex / claude-code / kiro-cli
  *     CAT_OTEL_RESOURCE_ATTRIBUTES    Extra resource attributes, "k=v,k2=v2"
  *                                     (also reads OTEL_RESOURCE_ATTRIBUTES)
  *     CAT_OTEL_PRICING_FILE           Path to the rate table JSON. Default: the bundled
@@ -89,6 +95,16 @@
  *     CAT_OTEL_CONTENT_MAX_CHARS      Per-attribute limit for captured content.
  *                                     Default 20000
  *     CAT_OTEL_STATE_DIR              State directory. Defaults per runtime
+ *     CAT_OTEL_KIRO_CREDIT_USD        Kiro only: what one credit costs. Unset (default), no
+ *                                     monetary cost is reported and only the credits are
+ *     CAT_OTEL_KIRO_SESSIONS_DIR      Kiro only: where the session store lives.
+ *                                     Default $KIRO_HOME/sessions/cli
+ *     CAT_OTEL_KIRO_STORE_WAIT_MS     Kiro only: how long to wait for the session store to be
+ *                                     written after a turn. Default 2000
+ *     CAT_OTEL_KIRO_DEFER             Kiro only: 0 to handle `stop` inline instead of in a
+ *                                     detached process (default 1). Inline blocks the turn
+ *                                     for the wait above and still misses the last turn,
+ *                                     because Kiro writes the store after the hook exits
  *     CAT_OTEL_DEBUG                  1 to log details to hook.log in the state directory
  *     CAT_OTEL_DISABLE                1 to return immediately without doing anything
  */
@@ -126,12 +142,13 @@ import {
   providerName,
   singleMessage,
   text,
+  turnAttr,
   usageAttrs,
 } from "./spans.ts";
 import { loadState, saveState } from "./state.ts";
 import { nowNs, toNs } from "./time.ts";
 import {
-  emptyUsage,
+  emptyBucket,
   mapUsage,
   type AgentRuntime,
   type HookPayload,
@@ -140,6 +157,7 @@ import {
   type TurnBucket,
   type TurnState,
 } from "./types.ts";
+import { awaitKiroStore, deferKiroStop, KIRO_TRIGGERS, processKiroEvent } from "./kiro.ts";
 
 /**
  * Only Stop's stdout is meant to be parsed as JSON by Codex; exiting silently is safer for
@@ -167,15 +185,6 @@ function enabled(name: string): boolean {
 
 function turnIdOf(payload: HookPayload, state: HookState): string {
   return payload.prompt_id || payload.turn_id || state.last_turn_id || "unknown";
-}
-
-/**
- * The turn (invocation) identifier. The kind of span is fully expressed by
- * `gen_ai.operation.name` (`invoke_agent` / `chat` / `execute_tool`), so no custom
- * attribute is added for it.
- */
-function turnAttr(state: HookState, turnId: string): readonly [string, string] {
-  return [`${state.runtime}.turn.id`, turnId];
 }
 
 function mergeBucket(into: TurnBucket, source: TurnBucket): void {
@@ -343,7 +352,7 @@ function syncRollout(
 
     let bucket = perTurn.get(turnId);
     if (!bucket) {
-      bucket = { usage: emptyUsage(), cost: 0, count: 0, toolCount: 0, model, endNs: null };
+      bucket = emptyBucket(model);
       perTurn.set(turnId, bucket);
     }
     bucket.usage = addUsage(bucket.usage, usage);
@@ -393,14 +402,7 @@ function syncRollout(
 
     let bucket = perTurn.get(turnId);
     if (!bucket) {
-      bucket = {
-        usage: emptyUsage(),
-        cost: 0,
-        count: 0,
-        toolCount: 0,
-        model,
-        endNs: null,
-      };
+      bucket = emptyBucket(model);
       perTurn.set(turnId, bucket);
     }
     bucket.toolCount += 1;
@@ -611,25 +613,47 @@ const HANDLERS: Record<string, Handler> = {
   SubagentStop: handleSubagentStop,
 };
 
+const DEFAULT_SERVICE: Record<AgentRuntime, string> = {
+  codex: "codex",
+  claude: "claude-code",
+  kiro: "kiro-cli",
+};
+
+/**
+ * Kiro's `agentSpawn` payload carries no session_id, only the `KIRO_SESSION_ID` the CLI
+ * exports into the hook's environment, so the environment is the fallback.
+ */
+function sessionIdOf(payload: HookPayload, runtime: AgentRuntime): string {
+  if (payload.session_id) {
+    return payload.session_id;
+  }
+  return runtime === "kiro" ? env(["KIRO_SESSION_ID"]) : "";
+}
+
 /** Processes a payload and returns the spans sent. Exported for the tests. */
 export async function processPayload(
   payload: HookPayload,
   runtime: AgentRuntime = "codex",
 ): Promise<OtlpSpan[]> {
-  const event = payload.hook_event_name;
-  const handler = event ? HANDLERS[event] : undefined;
-  const sessionId = payload.session_id;
-  if (!handler || !sessionId) {
+  const event = payload.hook_event_name ?? "";
+  const known =
+    runtime === "kiro"
+      ? (KIRO_TRIGGERS as readonly string[]).includes(event)
+      : event in HANDLERS;
+  const sessionId = sessionIdOf(payload, runtime);
+  if (!known || !sessionId) {
     return [];
   }
 
   const state = loadState(sessionId, runtime);
   const pricing = loadPricing();
   const metrics = newMetricStore();
-  const spans = handler(state, payload, pricing, metrics);
+  const spans =
+    runtime === "kiro"
+      ? processKiroEvent(state, payload, pricing, metrics)
+      : (HANDLERS[event] as Handler)(state, payload, pricing, metrics);
   saveState(state);
-  const defaultService = runtime === "claude" ? "claude-code" : "codex";
-  const serviceName = env(["CAT_OTEL_SERVICE_NAME"], defaultService);
+  const serviceName = env(["CAT_OTEL_SERVICE_NAME"], DEFAULT_SERVICE[runtime]);
   // Traces and metrics are separate signals with separate endpoints, so send in parallel.
   await Promise.all([
     exportSpans(spans, serviceName),
@@ -638,8 +662,40 @@ export async function processPayload(
   return spans;
 }
 
+function runtimeOf(argv: readonly string[]): AgentRuntime {
+  for (const runtime of ["claude", "kiro"] as const) {
+    if (argv.includes(`--runtime=${runtime}`)) {
+      return runtime;
+    }
+  }
+  return "codex";
+}
+
+/**
+ * Kiro's `stop`: usually handed to a detached copy of this hook, because Kiro writes the
+ * turn's usage only once the hook it is waiting on has exited. Returns true when the event was
+ * passed on and this process is done with it. `CAT_OTEL_KIRO_DEFER=0` keeps it inline instead,
+ * which then blocks the turn for as long as it waits on the store.
+ */
+async function handedOff(payload: HookPayload, runtime: AgentRuntime): Promise<boolean> {
+  const entry = process.argv[1];
+  if (runtime !== "kiro" || payload.hook_event_name !== "stop" || entry === undefined) {
+    return false;
+  }
+  if (process.argv.includes("--deferred")) {
+    // This *is* the detached copy: wait for the store, then handle the event normally.
+    await awaitKiroStore(sessionIdOf(payload, runtime));
+    return false;
+  }
+  if (!flag("CAT_OTEL_KIRO_DEFER", true)) {
+    await awaitKiroStore(sessionIdOf(payload, runtime));
+    return false;
+  }
+  return deferKiroStop(payload, entry);
+}
+
 export async function main(): Promise<number> {
-  const runtime: AgentRuntime = process.argv.includes("--runtime=claude") ? "claude" : "codex";
+  const runtime = runtimeOf(process.argv);
   let event: string | null = null;
   try {
     const raw = readFileSync(0, "utf8");
@@ -648,8 +704,12 @@ export async function main(): Promise<number> {
       const payload = parsed as HookPayload;
       event = payload.hook_event_name ?? null;
       if (!enabled("DISABLE")) {
-        const spans = await processPayload(payload, runtime);
-        debug(`event=${event} spans=${spans.length}`, runtime);
+        if (await handedOff(payload, runtime)) {
+          debug(`event=${event} deferred`, runtime);
+        } else {
+          const spans = await processPayload(payload, runtime);
+          debug(`event=${event} spans=${spans.length}`, runtime);
+        }
       }
     }
   } catch (error) {

@@ -254,12 +254,21 @@ export function inferenceAttrs(input: InferenceInput): InferenceAttrs {
   };
 }
 
+/**
+ * The provider defaults per runtime. `kiro` is not one of semconv's well-known values, and
+ * deliberately so: Kiro CLI talks to the Kiro service, which fronts several model families
+ * (Claude, DeepSeek, MiniMax, GLM, Qwen), so no single upstream provider describes it — and
+ * semconv allows a value outside the well-known list.
+ */
+const PROVIDERS: Record<AgentRuntime, string> = {
+  codex: "openai",
+  claude: "anthropic",
+  kiro: "kiro",
+};
+
 /** The provider the rollout reports, falling back to the runtime's default. */
 export function providerName(state: HookState): string {
-  return (
-    state.rollout_context.model_provider ||
-    (state.runtime === "claude" ? "anthropic" : "openai")
-  );
+  return state.rollout_context.model_provider || PROVIDERS[state.runtime] || "openai";
 }
 
 /**
@@ -269,9 +278,28 @@ export function providerName(state: HookState): string {
  * `gen_ai.agent.name` on `gen_ai.execute_tool.duration` as the name of the agent that ran
  * the tool. Claude Code's `agent_type` (`general-purpose` and friends) is exactly that
  * name, so spans originating from a subagent use agent_type rather than the runtime name.
+ *
+ * Kiro CLI names the agent a session runs (`kiro_default`, or whatever
+ * `~/.kiro/agents/<name>.json` declares) and reports it in the session store, so that name
+ * is used there — it is the agent, in semconv's sense, more precisely than the CLI is.
  */
 export function agentName(state: HookState, payload?: HookPayload): string {
-  return payload?.agent_type || (state.runtime === "claude" ? "claude-code" : "codex");
+  if (payload?.agent_type) {
+    return payload.agent_type;
+  }
+  if (state.runtime === "kiro") {
+    return state.rollout_context.agent_name || "kiro-cli";
+  }
+  return state.runtime === "claude" ? "claude-code" : "codex";
+}
+
+/**
+ * The turn (invocation) identifier. The kind of span is fully expressed by
+ * `gen_ai.operation.name` (`invoke_agent` / `chat` / `execute_tool`), so no custom attribute
+ * is added for it.
+ */
+export function turnAttr(state: HookState, turnId: string): AttrPair {
+  return [`${state.runtime}.turn.id`, turnId];
 }
 
 export interface CommonOptions {
@@ -400,7 +428,7 @@ function costAttrs(cost: CostBreakdown, scope: UsageScope, round8: (value: numbe
     ["gen_ai.usage.cost.currency", cost.currency],
     ["gen_ai.usage.cost.source", COST_SOURCE_LOCAL],
   ];
-  if (costBreakdown()) {
+  if (costBreakdown() && cost.classified) {
     // The classes of COST_BREAKDOWN_ISSUE that this hook can separate. They sum to the
     // amount above. `reasoning` is not one of them: reasoning tokens are billed at the
     // output rate and are already counted in it. `tool` has no cost of its own here, as the
@@ -415,14 +443,25 @@ function costAttrs(cost: CostBreakdown, scope: UsageScope, round8: (value: numbe
   return pairs;
 }
 
+export interface UsageOptions {
+  /**
+   * Whether token counts were reported at all. Kiro CLI's session store leaves them at zero
+   * when the service meters the turn in credits instead, and a zero there would read as
+   * "free" rather than "not reported", so the token attributes are left off entirely.
+   */
+  tokens?: boolean;
+}
+
 /** Tokens and cost, rounded to 8 decimal places before being attached. */
 export function usageAttrs(
   usage: Usage,
   cost: CostBreakdown,
   runtime: AgentRuntime = "codex",
   scope: UsageScope = "inference",
+  options: UsageOptions = {},
 ): AttrPair[] {
   const round8 = (value: number): number => Math.round(value * 1e8) / 1e8;
+  const reported = options.tokens !== false;
   const cacheBreakdown: AttrPair[] =
     scope === "agent"
       ? []
@@ -434,25 +473,38 @@ export function usageAttrs(
           [`${runtime}.usage.cache_write.1h.input_tokens`, usage.cache_creation_1h_input_tokens],
           [`${runtime}.usage.uncached_input_tokens`, cost.uncachedInputTokens],
         ];
+  const tokenPairs: AttrPair[] = reported
+    ? [
+        // input_tokens counts the whole prompt — system prompt, conversation history, and
+        // this user prompt — including the cache read and write portions.
+        ["gen_ai.usage.input_tokens", usage.input_tokens],
+        ["gen_ai.usage.output_tokens", usage.output_tokens],
+        ["gen_ai.usage.reasoning.output_tokens", usage.reasoning_output_tokens],
+        ...cacheBreakdown,
+        // An extension: total_tokens is absent from the semconv registry, hence the prefix.
+        [`${runtime}.usage.total_tokens`, usage.total_tokens],
+      ]
+    : [];
   return [
-    // input_tokens counts the whole prompt — system prompt, conversation history, and this
-    // user prompt — including the cache read and write portions.
-    ["gen_ai.usage.input_tokens", usage.input_tokens],
-    ["gen_ai.usage.output_tokens", usage.output_tokens],
-    ["gen_ai.usage.reasoning.output_tokens", usage.reasoning_output_tokens],
-    ...cacheBreakdown,
+    ...tokenPairs,
     // Cost under `gen_ai.*` is allowed only because COST_ATTRIBUTES_PR puts it in the
     // registry. Until that PR merges the extensions below are kept as well, so a backend
     // already reading them does not lose cost if the draft names change.
     ...costAttrs(cost, scope, round8),
     // Everything below is an extension absent from the semconv registry. `gen_ai.*` is
     // OTel's namespace, so custom attributes live under the runtime's own prefix.
-    [`${runtime}.usage.total_tokens`, usage.total_tokens],
     [`${runtime}.usage.cost`, double(round8(cost.totalCost))],
-    [`${runtime}.usage.input_cost`, double(round8(cost.inputCost))],
-    [`${runtime}.usage.output_cost`, double(round8(cost.outputCost))],
     [`${runtime}.usage.cost.currency`, cost.currency],
-    [`${runtime}.usage.cost.pricing_matched`, cost.pricingMatched],
+    // Both the split and "did a rate table entry match" are per-token-rate notions. An amount
+    // metered by the provider (Kiro's credits) has neither, and zeros there would read as
+    // "the input side was free" rather than "the question does not apply".
+    ...(cost.classified
+      ? ([
+          [`${runtime}.usage.input_cost`, double(round8(cost.inputCost))],
+          [`${runtime}.usage.output_cost`, double(round8(cost.outputCost))],
+          [`${runtime}.usage.cost.pricing_matched`, cost.pricingMatched],
+        ] as AttrPair[])
+      : []),
   ];
 }
 function contentMaximum(): number {

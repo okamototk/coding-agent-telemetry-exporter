@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "agentSpawn": [
+      {
+        "command": "__HOOK_COMMAND__",
+        "timeout_ms": 10000
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "command": "__HOOK_COMMAND__",
+        "timeout_ms": 10000
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "__HOOK_COMMAND__",
+        "timeout_ms": 10000
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "__HOOK_COMMAND__",
+        "timeout_ms": 10000
+      }
+    ],
+    "stop": [
+      {
+        "command": "__HOOK_COMMAND__",
+        "timeout_ms": 20000
+      }
+    ]
+  }
+}

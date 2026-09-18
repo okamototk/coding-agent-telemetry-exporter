@@ -20,6 +20,7 @@
  *     gen_ai.invoke_agent.inference_calls LLM requests in that turn
  *     gen_ai.invoke_agent.tool_calls      tool calls in that turn
  *     gen_ai.execute_tool.duration        execute_tool span duration
+ *     kiro.client.credit.usage            credits one LLM request consumed (Kiro only)
  *
  * The rest of semconv cannot be produced in principle: the rollout has no per-chunk
  * timestamps for time_to_first_chunk / time_per_output_chunk, gen_ai.server.* is measured
@@ -105,6 +106,20 @@ const OPERATION_COST: Instrument = {
   unit: "{cost}",
   description: "Monetary cost of a single GenAI client operation.",
   bounds: COST_BOUNDS,
+};
+
+/**
+ * An extension, with no semconv counterpart: Kiro CLI meters a turn in **credits**, its own
+ * plan unit, and reports no token counts, so the credits are the only usage figure there.
+ * `gen_ai.client.token.usage` and `gen_ai.client.operation.cost` cannot express them —
+ * credits are neither tokens nor money — hence a `kiro.*` instrument, emitted only when a
+ * credit amount was reported. Its boundaries span a fraction of a credit to a few dozen.
+ */
+const CREDIT_USAGE: Instrument = {
+  name: "kiro.client.credit.usage",
+  unit: "{credit}",
+  description: "Credits a single GenAI client operation consumed.",
+  bounds: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50],
 };
 
 const AGENT_DURATION: Instrument = {
@@ -234,6 +249,16 @@ export interface ChatMeasurement {
   cost: number;
   /** ISO 4217 code, required by the draft alongside the amount. */
   currency: string;
+  /**
+   * Credits the request consumed, for a runtime that meters them (Kiro). Zero or absent
+   * records no point, exactly as an undetermined cost does.
+   */
+  credits?: number | null;
+  /**
+   * False when no token counts were reported for the request, so no token point is recorded
+   * at all — a zero-token point would be indistinguishable from a genuinely empty request.
+   */
+  tokens?: boolean;
 }
 
 export function recordChat(store: MetricStore, chat: ChatMeasurement): void {
@@ -243,18 +268,23 @@ export function recordChat(store: MetricStore, chat: ChatMeasurement): void {
     ["gen_ai.request.model", chat.model],
     ["gen_ai.response.model", chat.model],
   ];
-  for (const [type, tokens] of [
-    ["input", chat.inputTokens],
-    ["output", chat.outputTokens],
-  ] as const) {
-    record(
-      store,
-      TOKEN_USAGE,
-      tokens,
-      [...common, ["gen_ai.token.type", type]],
-      chat.startNs,
-      chat.endNs,
-    );
+  if (chat.tokens !== false) {
+    for (const [type, tokens] of [
+      ["input", chat.inputTokens],
+      ["output", chat.outputTokens],
+    ] as const) {
+      record(
+        store,
+        TOKEN_USAGE,
+        tokens,
+        [...common, ["gen_ai.token.type", type]],
+        chat.startNs,
+        chat.endNs,
+      );
+    }
+  }
+  if (chat.credits !== null && chat.credits !== undefined && chat.credits > 0) {
+    record(store, CREDIT_USAGE, chat.credits, common, chat.startNs, chat.endNs);
   }
   record(
     store,

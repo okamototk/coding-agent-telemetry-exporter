@@ -2,7 +2,7 @@
   "name": "agent-otel-genai-hook",
   "version": "1.0.0",
   "private": true,
-  "description": "A coding-agent hook that exports token usage and cost as OTel GenAI traces (supports Codex CLI and Claude Code)",
+  "description": "A coding-agent hook that exports token usage and cost as OTel GenAI traces (supports Codex CLI, Claude Code, and Kiro CLI)",
   "type": "module",
   "engines": {
     "node": ">=18.18"

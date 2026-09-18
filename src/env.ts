@@ -101,12 +101,30 @@ export function claudeHome(): string {
   return process.env["CLAUDE_CONFIG_DIR"] || join(homedir(), ".claude");
 }
 
+export function kiroHome(): string {
+  return process.env["KIRO_HOME"] || join(homedir(), ".kiro");
+}
+
+/**
+ * Where Kiro CLI keeps its session store, one `<session_id>.json` per session. Override it
+ * when the CLI runs on the legacy `.amazonq` layout (`~/.aws/amazonq/sessions/cli`).
+ */
+export function kiroSessionsDir(): string {
+  return env(["CAT_OTEL_KIRO_SESSIONS_DIR"], join(kiroHome(), "sessions", "cli"));
+}
+
+const HOMES: Record<AgentRuntime, () => string> = {
+  codex: codexHome,
+  claude: claudeHome,
+  kiro: kiroHome,
+};
+
 export function stateDir(runtime: AgentRuntime = "codex"): string {
   const explicit = env(["CAT_OTEL_STATE_DIR"]);
   if (explicit) {
     return explicit;
   }
-  return join(runtime === "claude" ? claudeHome() : codexHome(), "otel-genai-hook");
+  return join((HOMES[runtime] ?? codexHome)(), "otel-genai-hook");
 }
 
 export function debug(message: string, runtime: AgentRuntime = "codex"): void {

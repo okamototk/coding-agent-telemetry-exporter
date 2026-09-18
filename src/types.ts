@@ -1,8 +1,8 @@
 /** Shapes of the coding agent hook payload, transcripts, and state file. */
 
-export type AgentRuntime = "codex" | "claude";
+export type AgentRuntime = "codex" | "claude" | "kiro";
 
-/** The events this hook subscribes to. */
+/** The events this hook subscribes to. Kiro's triggers are named separately, in kiro.ts. */
 export type HookEventName = "SessionStart" | "UserPromptSubmit" | "Stop" | "SessionEnd";
 
 /**
@@ -32,6 +32,13 @@ export interface HookPayload {
   agent_id?: string | null;
   agent_type?: string | null;
   agent_transcript_path?: string | null;
+  /** Kiro CLI preToolUse / postToolUse */
+  tool_name?: string | null;
+  tool_input?: unknown;
+  /** Kiro CLI postToolUse */
+  tool_response?: unknown;
+  /** Kiro CLI stop; the counterpart of Claude Code's last_assistant_message. */
+  assistant_response?: string | null;
 }
 
 export const USAGE_KEYS = [
@@ -115,6 +122,10 @@ export interface RolloutContext {
   model?: string | null;
   effort?: string | null;
   errors?: string[];
+  /** Kiro: the configured agent the session runs (`session_state.agent_name`). */
+  agent_name?: string | null;
+  /** Kiro: the model's context length, reported by the session store. */
+  context_window?: number | null;
 }
 
 export interface TurnState {
@@ -150,9 +161,41 @@ export interface HookState {
   transcript_cursors: Record<string, TranscriptCursor>;
   /** Totals collected early at SubagentStop, merged into the parent Stop's turn span. */
   pending_turns: Record<string, SerializedTurnBucket>;
+  /**
+   * Kiro: turns counted from `userPromptSubmit`. The hook payload carries no turn identifier,
+   * so the turn id is synthesized from this counter (see kiro.ts).
+   */
+  turn_seq: number;
+  /** Kiro: how many `user_turn_metadatas` entries of the session store were consumed. */
+  turn_metadata_offset: number;
+  /**
+   * Kiro: whether the consumed count has been aligned with the session store once. Until it
+   * has, turns already in the store belong to the session's past, not to this hook.
+   */
+  store_synced: boolean;
+  /** Kiro: tool executions opened by `preToolUse` and not yet closed, oldest first. */
+  open_tools: OpenToolState[];
+  /** Kiro: the closed tool executions of a turn, used to place the LLM request spans. */
+  turn_tools: Record<string, ToolWindow[]>;
   cwd?: string | null;
   model?: string | null;
   source?: string | null;
+}
+
+/** Kiro: a `preToolUse` awaiting its `postToolUse`. */
+export interface OpenToolState {
+  name: string;
+  turnId: string;
+  /** Nanoseconds as a decimal string. */
+  start_ns: string;
+  /** The serialized tool_input, used to pair concurrent calls of the same tool. */
+  arguments: string | null;
+}
+
+/** Kiro: when a tool ran, in nanoseconds as decimal strings. */
+export interface ToolWindow {
+  start_ns: string;
+  end_ns: string;
 }
 
 export interface PendingToolState {
@@ -187,4 +230,8 @@ export interface TurnBucket {
   toolCount: number;
   model: string | null;
   endNs: bigint | null;
+}
+
+export function emptyBucket(model: string | null = null): TurnBucket {
+  return { usage: emptyUsage(), cost: 0, count: 0, toolCount: 0, model, endNs: null };
 }

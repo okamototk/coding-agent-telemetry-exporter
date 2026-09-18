@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { debug } from "./env.ts";
+import { debug, numberEnv } from "./env.ts";
 import type { Usage } from "./types.ts";
 
 export interface Rates {
@@ -40,6 +40,12 @@ export interface CostBreakdown {
   inputTokenCost: number;
   cacheReadCost: number;
   cacheWriteCost: number;
+  /**
+   * Whether the per-class split above accounts for {@link totalCost}. False when the amount
+   * came from a metered total rather than from per-token rates (see {@link creditCost}), in
+   * which case the breakdown is not emitted.
+   */
+  classified: boolean;
 }
 
 const FALLBACK_PRICING: Pricing = {
@@ -107,6 +113,36 @@ export function ratesFor(model: string | null | undefined, pricing: Pricing): [R
   return [pricing.default || FALLBACK_PRICING.default, false];
 }
 
+/**
+ * Cost from a metered credit amount, or null when there is nothing to report.
+ *
+ * Kiro CLI does not meter tokens: it reports what a turn consumed in **credits**, its own
+ * plan unit, so there is no token count to apply a per-token rate to. Money therefore needs
+ * one number the rate table cannot hold — what a credit costs — supplied through
+ * `CAT_OTEL_KIRO_CREDIT_USD`. Unset (the default), no monetary cost is emitted at all and
+ * the credits stand on their own as `kiro.usage.credits`.
+ */
+export function creditCost(credits: number, pricing: Pricing): CostBreakdown | null {
+  const rate = numberEnv("CAT_OTEL_KIRO_CREDIT_USD", 0);
+  if (!(rate > 0) || !(credits > 0)) {
+    return null;
+  }
+  const total = credits * rate;
+  return {
+    uncachedInputTokens: 0,
+    inputCost: 0,
+    outputCost: 0,
+    totalCost: total,
+    currency: pricing.currency || "USD",
+    // The rate was configured explicitly, so no fallback was needed.
+    pricingMatched: true,
+    inputTokenCost: 0,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
+    classified: false,
+  };
+}
+
 export function cost(usage: Usage, model: string | null | undefined, pricing: Pricing): CostBreakdown {
   const [rates, matched] = ratesFor(model, pricing);
   const cached = Math.max(0, usage.cached_input_tokens);
@@ -137,5 +173,6 @@ export function cost(usage: Usage, model: string | null | undefined, pricing: Pr
     inputTokenCost: inputCost,
     cacheReadCost: cachedCost,
     cacheWriteCost: creationCost,
+    classified: true,
   };
 }
