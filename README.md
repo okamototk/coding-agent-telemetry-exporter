@@ -2,6 +2,8 @@
 
 Token usage and cost as OTel GenAI traces (TypeScript).
 
+![Coding Agent Telemetry Exporter overview](docs/images/overview.png)
+
 **Supported agents: Codex CLI / Claude Code / Kiro CLI**
 
 Runs as a coding agent's command hook, turning **input / output tokens** (the whole prompt:
