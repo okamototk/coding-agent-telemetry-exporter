@@ -620,12 +620,16 @@ function handleStop(
 
   const spans: OtlpSpan[] = [];
   let costTotal = 0;
+  let inputCostTotal = 0;
+  let outputCostTotal = 0;
   for (let index = 0; index < count; index += 1) {
     const [chatStart, chatEnd] = windows[index] ?? [startNs, endNs];
     const usage = usages[index] ?? emptyUsage();
     const amount = credits[index] ?? 0;
     const breakdown = creditCost(amount, pricing) ?? cost(usage, model, pricing);
     costTotal += breakdown.totalCost;
+    inputCostTotal += breakdown.inputCost;
+    outputCostTotal += breakdown.outputCost;
     const { attributes, event } = inferenceAttrs({
       pairs: [
         ...commonAttrs(state, payload, model),
@@ -676,8 +680,13 @@ function handleStop(
 
   const turnCredits = summary.credits.reduce((total, value) => total + value, 0);
   const turnCost = creditCost(turnCredits, pricing) ?? cost(summary.usage, model, pricing);
-  // Use the sum of the per-request costs, not a rounded single figure.
+  // Use the sums of the per-request costs, not a rounded single figure. The split cannot be
+  // recomputed from the turn's usage either: a rate can depend on one request's size.
   turnCost.totalCost = costTotal;
+  if (turnCost.classified && count > 0) {
+    turnCost.inputCost = inputCostTotal;
+    turnCost.outputCost = outputCostTotal;
+  }
   const toolCount = summary.toolCalls ?? tools.length;
   const agent = agentName(state, payload);
   const { attributes, event } = inferenceAttrs({

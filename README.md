@@ -668,21 +668,31 @@ by `npm run build`) are found.
 
 ```json
 {
-  "as_of": "2026-09-18",
+  "as_of": "2026-10-14",
   "currency": "USD",
   "default": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
   "per_million_tokens": {
-    "claude-sonnet-5": {
+    "claude-sonnet-5-5": {
       "input": 2.0,
       "cached_input": 0.2,
       "cache_creation_5m": 2.5,
       "cache_creation_1h": 4.0,
       "output": 10.0
     },
+    "gpt-5.5": {
+      "input": 5.0, "cached_input": 0.5, "output": 30.0,
+      "long_context": { "above_input_tokens": 272000, "input": 10.0, "cached_input": 1.0, "output": 45.0 }
+    },
     "gpt-5-nano": { "input": 0.05, "cached_input": 0.005, "output": 0.4 }
   }
 }
 ```
+
+`long_context` holds the rates for a request whose `input_tokens` exceed
+`above_input_tokens` — OpenAI's long-context tier, which bills the **whole** request at the
+higher rates, not just the tokens past the threshold. The threshold is checked per request;
+a turn's cost is the sum of its requests', so several short requests never add up to a long
+one. Fields the tier leaves out keep their base rates.
 
 Cost is computed as follows, treating `input_tokens` as a total that includes
 `cached_input_tokens` **and** `cache_creation_input_tokens`. A cache write is charged at its
@@ -707,6 +717,10 @@ matches every generation, so it keeps applying one generation's rates after the 
 priced differently — silently, and reported as `pricing_matched=true` because a key did
 match. A model the table does not cover falls to `default` and is flagged
 `{runtime}.usage.cost.pricing_matched=false` instead, which is a signal you can alert on.
+For the same reason a prefix match may not end inside a version number: `gpt-5` matches
+`gpt-5-codex` and `gpt-5-2025-08-07` but not `gpt-5.5`, and `claude-opus-5` does not match
+`claude-opus-5-5`. A one- or two-digit number after `.` or `-` continues the version; an
+eight-digit date or a word suffix does not.
 
 `as_of` records when the rates were last checked; with `CAT_OTEL_DEBUG=1` the hook notes a
 table over 180 days old, since a stale table is the one failure mode a cost figure cannot

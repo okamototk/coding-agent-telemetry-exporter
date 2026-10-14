@@ -227,6 +227,9 @@ export interface TranscriptCursor {
 export interface SerializedTurnBucket {
   usage: Usage;
   cost: number;
+  /** Absent in state written before the split was tracked. */
+  input_cost?: number | null;
+  output_cost?: number | null;
   count: number;
   toolCount: number;
   model: string | null;
@@ -237,6 +240,13 @@ export interface SerializedTurnBucket {
 export interface TurnBucket {
   usage: Usage;
   cost: number;
+  /**
+   * The sums of the per-request input and output costs. A rate can depend on the size of
+   * one request (the long-context tier), so they cannot be recomputed from the summed usage.
+   * null when part of the turn came from state that did not record them.
+   */
+  inputCost: number | null;
+  outputCost: number | null;
   count: number;
   toolCount: number;
   model: string | null;
@@ -244,5 +254,14 @@ export interface TurnBucket {
 }
 
 export function emptyBucket(model: string | null = null): TurnBucket {
-  return { usage: emptyUsage(), cost: 0, count: 0, toolCount: 0, model, endNs: null };
+  return {
+    usage: emptyUsage(),
+    cost: 0,
+    inputCost: 0,
+    outputCost: 0,
+    count: 0,
+    toolCount: 0,
+    model,
+    endNs: null,
+  };
 }

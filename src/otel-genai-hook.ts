@@ -139,7 +139,7 @@ import {
   SPAN_KIND_CLIENT,
   type OtlpSpan,
 } from "./otlp.ts";
-import { cost, loadPricing, type Pricing } from "./pricing.ts";
+import { cost, loadPricing, type CostBreakdown, type Pricing } from "./pricing.ts";
 import { addUsage, drainRollout, perRequestUsage, resolveRollout } from "./rollout.ts";
 import {
   agentName,
@@ -198,6 +198,8 @@ function turnIdOf(payload: HookPayload, state: HookState): string {
 function mergeBucket(into: TurnBucket, source: TurnBucket): void {
   into.usage = addUsage(into.usage, source.usage);
   into.cost += source.cost;
+  into.inputCost = sumOrNull(into.inputCost, source.inputCost);
+  into.outputCost = sumOrNull(into.outputCost, source.outputCost);
   into.count += source.count;
   into.toolCount += source.toolCount;
   into.model = source.model || into.model;
@@ -207,10 +209,31 @@ function mergeBucket(into: TurnBucket, source: TurnBucket): void {
       : into.endNs;
 }
 
+function sumOrNull(left: number | null, right: number | null): number | null {
+  return left === null || right === null ? null : left + right;
+}
+
+/**
+ * The turn's cost: the per-request sums where they are known. Recomputing the split from the
+ * summed usage is the fallback, for a turn partly restored from state that predates them.
+ */
+function turnCost(bucket: TurnBucket, model: string | null, pricing: Pricing): CostBreakdown {
+  const breakdown = cost(bucket.usage, model, pricing);
+  // Use the sum of the per-request costs, not a rounded single-request figure.
+  breakdown.totalCost = bucket.cost;
+  if (bucket.inputCost !== null && bucket.outputCost !== null) {
+    breakdown.inputCost = bucket.inputCost;
+    breakdown.outputCost = bucket.outputCost;
+  }
+  return breakdown;
+}
+
 function serialized(bucket: TurnBucket): SerializedTurnBucket {
   return {
     usage: bucket.usage,
     cost: bucket.cost,
+    input_cost: bucket.inputCost,
+    output_cost: bucket.outputCost,
     count: bucket.count,
     toolCount: bucket.toolCount,
     model: bucket.model,
@@ -222,6 +245,8 @@ function restored(bucket: SerializedTurnBucket): TurnBucket {
   return {
     usage: bucket.usage,
     cost: bucket.cost,
+    inputCost: typeof bucket.input_cost === "number" ? bucket.input_cost : null,
+    outputCost: typeof bucket.output_cost === "number" ? bucket.output_cost : null,
     count: bucket.count,
     toolCount: bucket.toolCount,
     model: bucket.model,
@@ -366,6 +391,8 @@ function syncRollout(
     }
     bucket.usage = addUsage(bucket.usage, usage);
     bucket.cost += breakdown.totalCost;
+    bucket.inputCost = sumOrNull(bucket.inputCost, breakdown.inputCost);
+    bucket.outputCost = sumOrNull(bucket.outputCost, breakdown.outputCost);
     bucket.count += 1;
     bucket.model = model || bucket.model;
     bucket.endNs = endNs;
@@ -487,9 +514,7 @@ function handleStop(
       continue;
     }
     const model = bucket.model || turn.model || payload.model || null;
-    const breakdown = cost(bucket.usage, model, pricing);
-    // Use the sum of the per-request costs, not a rounded single-request figure.
-    breakdown.totalCost = bucket.cost;
+    const breakdown = turnCost(bucket, model, pricing);
     const startNs = toNs(turn.start_ns) ?? bucket.endNs ?? nowNs();
     const endNs = targetTurn === turnId ? nowNs() : bucket.endNs ?? nowNs();
 
@@ -561,8 +586,7 @@ function handleSessionEnd(
       continue;
     }
     const model = bucket.model || turn.model || null;
-    const breakdown = cost(bucket.usage, model, pricing);
-    breakdown.totalCost = bucket.cost;
+    const breakdown = turnCost(bucket, model, pricing);
     const endNs = bucket.endNs ?? nowNs();
     const startNs = toNs(turn.start_ns) ?? endNs;
     const { attributes, event } = inferenceAttrs({

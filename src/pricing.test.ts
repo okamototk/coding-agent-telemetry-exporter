@@ -38,7 +38,7 @@ test("a dated snapshot resolves through its version-qualified key", () => {
 });
 
 test("the longest prefix wins over a shorter one", () => {
-  // "gpt-5.1-codex-max-xhigh" must pick "gpt-5.1-codex-max", not "gpt-5.1-codex" or "gpt-5.1".
+  // "gpt-5.1-codex-max-xhigh" must pick "gpt-5.1-codex-max", not "gpt-5.1".
   const [rates, matched] = ratesFor("gpt-5.1-codex-max-xhigh", BUNDLED);
   assert.equal(matched, true);
   assert.equal(rates.input, 1.25);
@@ -76,6 +76,86 @@ test("generations that are priced differently do not share rates", () => {
     ratesFor("claude-opus-5", BUNDLED)[0].input,
     ratesFor("claude-opus-4-1-20250805", BUNDLED)[0].input,
   );
+});
+
+test("a point release resolves to its own key, not the shorter one it extends", () => {
+  for (const [model, own] of [
+    ["claude-opus-5-5", "claude-opus-5-5"],
+    ["gpt-5.5-xhigh", "gpt-5.5"],
+    ["gpt-5.4-mini", "gpt-5.4-mini"],
+    ["gpt-5.2-codex", "gpt-5.2-codex"],
+  ] as const) {
+    const [rates, matched] = ratesFor(model, BUNDLED);
+    assert.equal(matched, true, model);
+    assert.equal(rates, BUNDLED.per_million_tokens[own], model);
+  }
+});
+
+test("a prefix match never ends inside a version number", () => {
+  // Without this, "gpt-5" would price "gpt-5.5" and "claude-opus-5" would price
+  // "claude-opus-5-5" at the older generation's rates, reported as a match.
+  const table: Pricing = {
+    currency: "USD",
+    default: { input: 1 },
+    per_million_tokens: {
+      "gpt-5": { input: 2 },
+      "claude-opus-5": { input: 3 },
+      "claude-opus-4": { input: 4 },
+    },
+  };
+  for (const model of ["gpt-5.5", "gpt-5.5-xhigh", "gpt-5.10", "claude-opus-5-5", "claude-opus-4-5-20251101"]) {
+    assert.deepEqual(ratesFor(model, table), [{ input: 1 }, false], model);
+  }
+  for (const [model, input] of [
+    ["gpt-5-2025-08-07", 2],
+    ["gpt-5-codex", 2],
+    ["claude-opus-5-20260101", 3],
+    ["claude-opus-5@20260101", 3],
+    ["claude-opus-5-1m", 3],
+  ] as const) {
+    assert.deepEqual(ratesFor(model, table), [{ input }, true], model);
+  }
+});
+
+test("a request past the long-context threshold is priced at the higher rates in full", () => {
+  const table: Pricing = {
+    currency: "USD",
+    default: {},
+    per_million_tokens: {
+      m: {
+        input: 2,
+        cached_input: 0.2,
+        output: 10,
+        long_context: { above_input_tokens: 272_000, input: 4, cached_input: 0.4, output: 15 },
+      },
+    },
+  };
+  const at = cost(usage({ input_tokens: 272_000, cached_input_tokens: 100_000, output_tokens: 1_000_000 }), "m", table);
+  assert.equal(at.inputTokenCost, (172_000 * 2) / 1e6);
+  assert.equal(at.cacheReadCost, (100_000 * 0.2) / 1e6);
+  assert.equal(at.outputCost, 10);
+
+  const past = cost(usage({ input_tokens: 272_001, cached_input_tokens: 100_000, output_tokens: 1_000_000 }), "m", table);
+  assert.equal(past.inputTokenCost, (172_001 * 4) / 1e6);
+  assert.equal(past.cacheReadCost, (100_000 * 0.4) / 1e6);
+  assert.equal(past.outputCost, 15);
+  assert.equal(past.pricingMatched, true);
+});
+
+test("the bundled OpenAI long-context tiers are 2x input and cache, 1.5x output", () => {
+  let tiers = 0;
+  for (const [model, rates] of Object.entries(BUNDLED.per_million_tokens)) {
+    const long = rates.long_context;
+    if (!long) {
+      continue;
+    }
+    tiers += 1;
+    assert.equal(long.above_input_tokens, 272_000, model);
+    assert.ok(Math.abs((long.input ?? 0) - (rates.input ?? 0) * 2) < 1e-9, `${model} input`);
+    assert.ok(Math.abs((long.cached_input ?? 0) - (rates.cached_input ?? 0) * 2) < 1e-9, `${model} cache`);
+    assert.ok(Math.abs((long.output ?? 0) - (rates.output ?? 0) * 1.5) < 1e-9, `${model} output`);
+  }
+  assert.ok(tiers > 0);
 });
 
 test("an unknown model falls to default and reports pricing_matched=false", () => {
@@ -171,15 +251,16 @@ test("negative or missing counts never produce a negative cost", () => {
 
 test("the bundled Claude rates follow the published cache multipliers", () => {
   // Cache writes are 1.25x (5m) and 2x (1h) the base input rate; reads are 0.1x, except on
-  // Fable 5.1 / Mythos 5.1, which are 0.025x.
+  // Fable 5.1 / Mythos 5.1, which are 0.025x, and Opus 5.5, which is 0.05x.
   const quarterRead = new Set(["claude-fable-5-1", "claude-mythos-5-1"]);
+  const halfRead = new Set(["claude-opus-5-5"]);
   for (const [model, rates] of Object.entries(BUNDLED.per_million_tokens)) {
     if (!model.startsWith("claude-")) {
       continue;
     }
     const input = rates.input ?? 0;
     assert.ok(input > 0, model);
-    const readMultiplier = quarterRead.has(model) ? 0.025 : 0.1;
+    const readMultiplier = quarterRead.has(model) ? 0.025 : halfRead.has(model) ? 0.05 : 0.1;
     assert.ok(
       Math.abs((rates.cached_input ?? 0) - input * readMultiplier) < 1e-9,
       `${model} cache read`,

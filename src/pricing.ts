@@ -14,6 +14,16 @@ export interface Rates {
   cache_creation_5m?: number;
   cache_creation_1h?: number;
   output?: number;
+  /**
+   * Rates for a request whose input exceeds `above_input_tokens`. OpenAI prices such a
+   * request at the higher rates in full, not just the tokens past the threshold, so these
+   * replace the base rates for the whole request.
+   */
+  long_context?: LongContextRates;
+}
+
+export interface LongContextRates extends Omit<Rates, "long_context"> {
+  above_input_tokens: number;
 }
 
 export interface Pricing {
@@ -120,7 +130,20 @@ export function loadPricing(): Pricing {
   return { ...FALLBACK_PRICING };
 }
 
-/** [rates, matched]. Resolution order: exact match, longest prefix match, `default`. */
+/**
+ * A remainder that carries on the key's version number: ".5" after "gpt-5", "-5" after
+ * "claude-opus-5", "-5-20251101" after "claude-opus-4". A one- or two-digit number is a
+ * version; an eight-digit date ("-20251001") or a suffix such as "-mini" or "-1m" is not.
+ */
+const VERSION_CONTINUATION = /^[.-]\d{1,2}(?![\da-z])/i;
+
+/**
+ * [rates, matched]. Resolution order: exact match, longest prefix match, `default`.
+ *
+ * A prefix match must not end inside a version number. Otherwise "gpt-5" would price
+ * "gpt-5.5", and "claude-opus-5" would price "claude-opus-5-5", at the older generation's
+ * rates while reporting a match; an unpriced point release falls to `default` instead.
+ */
 export function ratesFor(model: string | null | undefined, pricing: Pricing): [Rates, boolean] {
   const table = pricing.per_million_tokens;
   if (model) {
@@ -128,10 +151,14 @@ export function ratesFor(model: string | null | undefined, pricing: Pricing): [R
     if (exact) {
       return [exact, true];
     }
-    // "gpt-5.1-codex-max-xhigh" picks "gpt-5.1-codex-max" over the shorter "gpt-5.1-codex".
+    // "gpt-5.1-codex-max-xhigh" picks "gpt-5.1-codex-max" over the shorter "gpt-5.1".
     let best: string | null = null;
     for (const key of Object.keys(table)) {
-      if (model.startsWith(key) && (best === null || key.length > best.length)) {
+      if (
+        model.startsWith(key) &&
+        !VERSION_CONTINUATION.test(model.slice(key.length)) &&
+        (best === null || key.length > best.length)
+      ) {
         best = key;
       }
     }
@@ -172,13 +199,29 @@ export function creditCost(credits: number, pricing: Pricing): CostBreakdown | n
   };
 }
 
+/** The rates that apply to a request of `inputTokens`, switching to the long-context tier past its threshold. */
+function ratesForSize(rates: Rates, inputTokens: number): Rates {
+  const long = rates.long_context;
+  if (!long || !(inputTokens > long.above_input_tokens)) {
+    return rates;
+  }
+  const { above_input_tokens: _threshold, ...higher } = long;
+  return { ...rates, ...higher };
+}
+
+/**
+ * Cost of one request. `usage` must be a single request's: the long-context tier is decided
+ * by the size of one prompt, so a sum over several requests would cross the threshold
+ * without any one of them doing so.
+ */
 export function cost(usage: Usage, model: string | null | undefined, pricing: Pricing): CostBreakdown {
-  const [rates, matched] = ratesFor(model, pricing);
+  const [baseRates, matched] = ratesFor(model, pricing);
   const cached = Math.max(0, usage.cached_input_tokens);
   const cacheCreation = Math.max(0, usage.cache_creation_input_tokens);
   const cacheCreation5m = Math.max(0, usage.cache_creation_5m_input_tokens);
   const cacheCreation1h = Math.max(0, usage.cache_creation_1h_input_tokens);
   const totalInput = Math.max(0, usage.input_tokens);
+  const rates = ratesForSize(baseRates, totalInput);
   // The canonical input_tokens is a total that includes cache reads and creation.
   const uncached = Math.max(0, totalInput - cached - cacheCreation);
   const output = Math.max(0, usage.output_tokens);
