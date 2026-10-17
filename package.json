@@ -9,10 +9,10 @@
   },
   "scripts": {
     "build": "tsc",
-    "postbuild": "node -e \"import('node:fs').then(fs => fs.copyFileSync('pricing.json', 'dist/pricing.json'))\"",
+    "postbuild": "node -e \"import('node:fs').then(fs => fs.copyFileSync('src/pricing.json', 'dist/pricing.json'))\"",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/*.test.ts",
-    "test:dist": "npm run build && node --test dist/*.test.js"
+    "test": "node --test 'src/**/*.test.ts'",
+    "test:dist": "npm run build && node --test 'dist/**/*.test.js'"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

@@ -42,7 +42,7 @@
  * Kiro CLI works the same way with a different source and a different unit: its hooks carry
  * no usage either, so the turn totals come from the session store it writes itself
  * (`~/.kiro/sessions/cli/<session_id>.json`), and its tool spans come from the
- * `preToolUse` / `postToolUse` triggers. Kiro meters **credits**, not tokens — see kiro.ts.
+ * `preToolUse` / `postToolUse` triggers. Kiro meters **credits**, not tokens — see agents/kiro/hook.ts.
  *
  * Cost is not in the released semconv, so it is reported through the `codex.usage.cost` /
  * `claude.usage.cost` / `kiro.usage.cost` extension attributes (`gen_ai.*` is OTel's
@@ -120,9 +120,9 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { drainClaudeTranscript } from "./claude-transcript.ts";
-import { debug, env, flag } from "./env.ts";
-import { llmSpanId, toolSpanId, traceId, turnSpanId } from "./ids.ts";
+import { drainClaudeTranscript } from "./agents/claude/transcript.ts";
+import { debug, env, flag } from "./core/env.ts";
+import { llmSpanId, toolSpanId, traceId, turnSpanId } from "./core/ids.ts";
 import {
   ERROR_TYPE_OTHER,
   exportMetrics,
@@ -131,16 +131,16 @@ import {
   recordTool,
   recordTurn,
   type MetricStore,
-} from "./metrics.ts";
+} from "./otel/metrics.ts";
 import {
   attrs,
   exportSpans,
   span,
   SPAN_KIND_CLIENT,
   type OtlpSpan,
-} from "./otlp.ts";
-import { cost, loadPricing, type CostBreakdown, type Pricing } from "./pricing.ts";
-import { addUsage, drainRollout, perRequestUsage, resolveRollout } from "./rollout.ts";
+} from "./otel/otlp.ts";
+import { cost, loadPricing, type CostBreakdown, type Pricing } from "./core/pricing.ts";
+import { drainRollout, perRequestUsage, resolveRollout } from "./agents/codex/rollout.ts";
 import {
   agentName,
   commonAttrs,
@@ -152,10 +152,11 @@ import {
   text,
   turnAttr,
   usageAttrs,
-} from "./spans.ts";
-import { withState } from "./state.ts";
-import { nowNs, toNs } from "./time.ts";
+} from "./otel/spans.ts";
+import { withState } from "./core/state.ts";
+import { nowNs, toNs } from "./core/time.ts";
 import {
+  addUsage,
   emptyBucket,
   mapUsage,
   type AgentRuntime,
@@ -164,8 +165,8 @@ import {
   type SerializedTurnBucket,
   type TurnBucket,
   type TurnState,
-} from "./types.ts";
-import { awaitKiroStore, deferKiroStop, KIRO_TRIGGERS, processKiroEvent } from "./kiro.ts";
+} from "./core/types.ts";
+import { awaitKiroStore, deferKiroStop, KIRO_TRIGGERS, processKiroEvent } from "./agents/kiro/hook.ts";
 
 /**
  * Only Stop's stdout is meant to be parsed as JSON by Codex; exiting silently is safer for

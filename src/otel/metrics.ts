@@ -31,7 +31,7 @@ import {
   extraResourceAttributes,
   metricsIncludeResourceAttributes,
   metricsUrl,
-} from "./env.ts";
+} from "../core/env.ts";
 import {
   attrs,
   postOtlp,

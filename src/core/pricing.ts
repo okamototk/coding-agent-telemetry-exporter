@@ -73,8 +73,9 @@ function pricingCandidates(): string[] {
   if (override) {
     return [override];
   }
-  // After a build the hook runs from dist/, so look both alongside it and one level up.
-  return [join(HERE, "pricing.json"), join(HERE, "..", "pricing.json")];
+  // This module sits in core/, one level below the src/ (or, after a build, dist/) root that
+  // holds the rate table.
+  return [join(HERE, "..", "pricing.json")];
 }
 
 /** How old a rate table may get before the debug log points it out. */

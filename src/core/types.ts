@@ -2,7 +2,7 @@
 
 export type AgentRuntime = "codex" | "claude" | "kiro";
 
-/** The events this hook subscribes to. Kiro's triggers are named separately, in kiro.ts. */
+/** The events this hook subscribes to. Kiro's triggers are named separately, in agents/kiro/hook.ts. */
 export type HookEventName = "SessionStart" | "UserPromptSubmit" | "Stop" | "SessionEnd";
 
 /**
@@ -80,6 +80,10 @@ export function mapUsage(pick: (key: UsageKey) => number): Usage {
     out[key] = pick(key);
   }
   return out;
+}
+
+export function addUsage(into: Usage, usage: Usage): Usage {
+  return mapUsage((key) => into[key] + usage[key]);
 }
 
 /** One token_count record in the rollout = one LLM request. */
@@ -174,7 +178,7 @@ export interface HookState {
   pending_turns: Record<string, SerializedTurnBucket>;
   /**
    * Kiro: turns counted from `userPromptSubmit`. The hook payload carries no turn identifier,
-   * so the turn id is synthesized from this counter (see kiro.ts).
+   * so the turn id is synthesized from this counter (see agents/kiro/hook.ts).
    */
   turn_seq: number;
   /** Kiro: how many `user_turn_metadatas` entries of the session store were consumed. */

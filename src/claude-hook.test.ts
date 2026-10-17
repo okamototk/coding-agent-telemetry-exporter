@@ -185,7 +185,7 @@ test("folds the Claude transcript, cache usage, tools, and subagents into one tu
 
   const previous = { ...process.env };
   try {
-    // Same reason as in otel-genai-hook.test.ts: an ambient CAT_OTEL_* would change what the
+    // Same reason as in codex-hook.test.ts: an ambient CAT_OTEL_* would change what the
     // hook emits, so the run starts from an environment with none of them set.
     for (const name of Object.keys(process.env)) {
       if (name.startsWith("CAT_OTEL_")) {

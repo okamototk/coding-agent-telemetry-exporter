@@ -1,9 +1,9 @@
 /** Builds span attributes. All mapping onto the GenAI semconv lives here. */
 
-import { env, flag } from "./env.ts";
+import { env, flag } from "../core/env.ts";
 import { attrs, double, structuredAttr, type Attr, type AttrValue, type SpanEvent } from "./otlp.ts";
-import type { CostBreakdown } from "./pricing.ts";
-import type { AgentRuntime, GenAiMessage, HookPayload, HookState, Usage } from "./types.ts";
+import type { CostBreakdown } from "../core/pricing.ts";
+import type { AgentRuntime, GenAiMessage, HookPayload, HookState, Usage } from "../core/types.ts";
 
 export type AttrPair = readonly [string, AttrValue];
 

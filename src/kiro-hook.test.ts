@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { processPayload } from "./otel-genai-hook.ts";
-import type { HookPayload } from "./types.ts";
+import type { HookPayload } from "./core/types.ts";
 
 // src/*.test.ts exercises src/*.ts; dist/*.test.js exercises dist/*.js.
 const SELF = fileURLToPath(import.meta.url);

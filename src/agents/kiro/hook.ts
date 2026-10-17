@@ -8,7 +8,7 @@
  *   turn id is a counter of `userPromptSubmit` events (`t1`, `t2`, ...). It only has to be
  *   stable within the session, since the trace id is derived from it.
  * - **No usage in the payload, and none per request.** The session store summarizes a whole
- *   turn (see kiro-session.ts), so the per-request figures a `chat` span needs are
+ *   turn (see session.ts), so the per-request figures a `chat` span needs are
  *   apportioned across the turn's requests.
  * - **Tool calls come from hooks, not from a transcript.** `preToolUse` / `postToolUse`
  *   bracket each execution, which times it more precisely than any file would — and the
@@ -36,25 +36,24 @@
 
 import { spawn } from "node:child_process";
 
-import { debug, flag, numberEnv } from "./env.ts";
-import { llmSpanId, toolSpanId, traceId, turnSpanId } from "./ids.ts";
+import { debug, flag, numberEnv } from "../../core/env.ts";
+import { llmSpanId, toolSpanId, traceId, turnSpanId } from "../../core/ids.ts";
 import {
   drainKiroSession,
   kiroSessionContext,
   kiroSessionPath,
   type KiroTurnMetadata,
-} from "./kiro-session.ts";
+} from "./session.ts";
 import {
   ERROR_TYPE_OTHER,
   recordChat,
   recordTool,
   recordTurn,
   type MetricStore,
-} from "./metrics.ts";
-import { attrs, double, span, SPAN_KIND_CLIENT, type OtlpSpan } from "./otlp.ts";
-import { cost, creditCost, type Pricing } from "./pricing.ts";
-import { addUsage } from "./rollout.ts";
-import { loadState } from "./state.ts";
+} from "../../otel/metrics.ts";
+import { attrs, double, span, SPAN_KIND_CLIENT, type OtlpSpan } from "../../otel/otlp.ts";
+import { cost, creditCost, type Pricing } from "../../core/pricing.ts";
+import { loadState } from "../../core/state.ts";
 import {
   agentName,
   commonAttrs,
@@ -66,9 +65,10 @@ import {
   turnAttr,
   usageAttrs,
   type AttrPair,
-} from "./spans.ts";
-import { nowNs, toNs } from "./time.ts";
+} from "../../otel/spans.ts";
+import { nowNs, toNs } from "../../core/time.ts";
 import {
+  addUsage,
   emptyUsage,
   mapUsage,
   USAGE_KEYS,
@@ -80,7 +80,7 @@ import {
   type TurnState,
   type Usage,
   type UsageKey,
-} from "./types.ts";
+} from "../../core/types.ts";
 
 /** The hook triggers a Kiro agent config can declare, as `hook_event_name` reports them. */
 export const KIRO_TRIGGERS = [

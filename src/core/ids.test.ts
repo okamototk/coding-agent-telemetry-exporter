@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { drainClaudeTranscript } from "./claude-transcript.ts";
+import { drainClaudeTranscript } from "../agents/claude/transcript.ts";
 import { llmSpanId, toolSpanId, traceId, turnSpanId } from "./ids.ts";
 import { emptyUsage, type HookState } from "./types.ts";
 

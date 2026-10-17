@@ -24,8 +24,8 @@ import test from "node:test";
 import { loadState, withState } from "./state.ts";
 import type { HookState } from "./types.ts";
 
-// src/*.test.ts exercises src/*.ts; dist/*.test.js exercises dist/*.js.
-const HOOK = fileURLToPath(import.meta.url).replace(/state\.test\.(m?[jt]s)$/, "otel-genai-hook.$1");
+// src/**/*.test.ts exercises src/**/*.ts; dist/**/*.test.js exercises dist/**/*.js.
+const HOOK = fileURLToPath(import.meta.url).replace(/core[\\/]state\.test\.(m?[jt]s)$/, "otel-genai-hook.$1");
 
 const SESSION_ID = "01a02467-38a1-7ad2-9bc5-32037b0e52aa";
 const PROMPT_ID = "01a02467-3f01-7c50-8fbe-cfc45eb2d56d";

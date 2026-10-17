@@ -7,7 +7,7 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 
-import { debug, extraResourceAttributes, numberEnv, otlpHeaders, tracesUrl } from "./env.ts";
+import { debug, extraResourceAttributes, numberEnv, otlpHeaders, tracesUrl } from "../core/env.ts";
 
 export const SCOPE_NAME = "agent.otel.genai.hook";
 export const SCOPE_VERSION = "1.0.0";

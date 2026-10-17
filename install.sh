@@ -168,8 +168,8 @@ fi
 
 MODE="$mode" PLATFORM="$platform" CODEX_TARGET="$codex_target" \
 CLAUDE_TARGET="$claude_target" KIRO_TARGET="$kiro_target" KIRO_AGENT="$agent" \
-CODEX_TEMPLATE="$HERE/hooks.codex.json" CLAUDE_TEMPLATE="$HERE/hooks.claude.json" \
-KIRO_TEMPLATE="$HERE/hooks.kiro.json" NODE_COMMAND="$NODE" HOOK_PATH="$hook" \
+CODEX_TEMPLATE="$HERE/hooks/codex.json" CLAUDE_TEMPLATE="$HERE/hooks/claude.json" \
+KIRO_TEMPLATE="$HERE/hooks/kiro.json" NODE_COMMAND="$NODE" HOOK_PATH="$hook" \
 DRY_RUN="$dry_run" \
 "$NODE" <<'JS'
 const fs = require("node:fs");

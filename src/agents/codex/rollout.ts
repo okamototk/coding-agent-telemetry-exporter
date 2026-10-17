@@ -8,9 +8,9 @@
 import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { codexHome } from "./env.ts";
-import { isoToNs } from "./time.ts";
-import { usageOf } from "./state.ts";
+import { codexHome } from "../../core/env.ts";
+import { isoToNs } from "../../core/time.ts";
+import { usageOf } from "../../core/state.ts";
 import {
   mapUsage,
   type GenAiMessage,
@@ -21,7 +21,7 @@ import {
   type RolloutToolCall,
   type Usage,
   USAGE_KEYS,
-} from "./types.ts";
+} from "../../core/types.ts";
 
 /** Returns the first `*-<session_id>.jsonl` found. The walk is shallow: year/month/day. */
 function findRollout(root: string, suffix: string): string | null {
@@ -499,8 +499,4 @@ export function perRequestUsage(request: RolloutRequest, cumulative: Usage): Per
     usage.total_tokens = usage.input_tokens + usage.output_tokens;
   }
   return { usage, cumulative: updated };
-}
-
-export function addUsage(into: Usage, usage: Usage): Usage {
-  return mapUsage((key) => into[key] + usage[key]);
 }

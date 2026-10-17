@@ -8,8 +8,8 @@
 
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 
-import { usageOf } from "./state.ts";
-import { isoToNs } from "./time.ts";
+import { usageOf } from "../../core/state.ts";
+import { isoToNs } from "../../core/time.ts";
 import {
   type GenAiMessage,
   type HookState,
@@ -18,8 +18,8 @@ import {
   type RolloutToolCall,
   type TranscriptCursor,
   type Usage,
-} from "./types.ts";
-import type { DrainResult } from "./rollout.ts";
+} from "../../core/types.ts";
+import type { DrainResult } from "../codex/rollout.ts";
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;

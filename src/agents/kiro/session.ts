@@ -16,7 +16,7 @@
  * Two properties of that record shape the whole Kiro path:
  *
  * - **Usage is per turn, not per request.** There is one entry per turn, however many LLM
- *   requests it made, so a per-request figure has to be apportioned (see kiro.ts).
+ *   requests it made, so a per-request figure has to be apportioned (see hook.ts).
  * - **The unit is credits.** `*_token_count` is 0 for a Kiro service account, which meters
  *   plan credits instead, one `metering_usage` entry per request. Credits are neither tokens
  *   nor money, so they are reported as they are and converted only when the operator supplies
@@ -30,9 +30,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { kiroSessionsDir } from "./env.ts";
-import { isoToNs } from "./time.ts";
-import { emptyUsage, type RolloutContext, type Usage } from "./types.ts";
+import { kiroSessionsDir } from "../../core/env.ts";
+import { isoToNs } from "../../core/time.ts";
+import { emptyUsage, type RolloutContext, type Usage } from "../../core/types.ts";
 
 /** One finished turn, as the session store reports it. */
 export interface KiroTurnMetadata {

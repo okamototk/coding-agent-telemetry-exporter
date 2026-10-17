@@ -662,9 +662,9 @@ address, or using `enduser.id` alone, keeps the grouping without the mail addres
 ### Rate table
 
 `pricing.json` is in USD per 1M tokens. Keys resolve in the order **exact match → longest
-prefix match → `default`**. By default the file is looked up next to the hook, then in the
-parent directory — so both `src/pricing.json` (the checkout) and `dist/pricing.json` (written
-by `npm run build`) are found.
+prefix match → `default`**. By default the file is looked up next to the entry point — so
+`src/pricing.json` (the checkout) and `dist/pricing.json` (written by `npm run build`) are both
+found.
 
 ```json
 {
@@ -771,7 +771,7 @@ subprocess, asserts it exports nothing itself and prints nothing, then waits for
 copy to export once the store appears.
 
 ```bash
-npm test           # runs src/*.ts directly (Node 23.6+ / 22.18+)
+npm test           # runs src/**/*.ts directly (Node 23.6+ / 22.18+)
 npm run test:dist  # builds first, then checks dist/*.js
 npm run typecheck
 ```
@@ -839,20 +839,23 @@ A healthy turn logs `event=stop deferred` (the hook Kiro waits on) followed by
 Source layout:
 
 ```
-src/otel-genai-hook.ts   Entry point: event handlers and span assembly
-src/rollout.ts           Resolving, advancing through, and deduplicating the Codex rollout JSONL
-src/claude-transcript.ts Advancing through and deduplicating the Claude transcript and subagents
-src/kiro.ts              Kiro's hook triggers: span assembly, tool brackets, deferred stop
-src/kiro-session.ts      Advancing through the Kiro CLI session store (per-turn credits)
-src/otlp.ts              Assembling and POSTing OTLP/HTTP (JSON)
-src/spans.ts             Mapping onto the GenAI semconv (routing attributes and trace events)
-src/metrics.ts           Aggregating and sending the GenAI semconv metrics (delta histograms)
-src/pricing.ts           Rate table and cost calculation
-src/state.ts             Reading and writing session state (atomic rename)
-src/ids.ts               Deterministic derivation of trace / span IDs
-src/env.ts               Environment variables, state directory, debug log
-src/time.ts              Converting between ns timestamps and ISO 8601
-src/types.ts             Types for the payload, state, and usage
+src/otel-genai-hook.ts              Entry point: event handlers and span assembly
+src/pricing.json                    Bundled rate table (copied into dist/ by the build)
+src/*-hook.test.ts                  End-to-end tests per agent (codex / claude / kiro)
+src/core/env.ts                     Environment variables, state directory, debug log
+src/core/time.ts                    Converting between ns timestamps and ISO 8601
+src/core/types.ts                   Types for the payload, state, and usage
+src/core/ids.ts                     Deterministic derivation of trace / span IDs
+src/core/state.ts                   Reading and writing session state (atomic rename)
+src/core/pricing.ts                 Rate table and cost calculation
+src/otel/otlp.ts                    Assembling and POSTing OTLP/HTTP (JSON)
+src/otel/spans.ts                   Mapping onto the GenAI semconv (routing attributes and trace events)
+src/otel/metrics.ts                 Aggregating and sending the GenAI semconv metrics (delta histograms)
+src/agents/codex/rollout.ts         Resolving, advancing through, and deduplicating the Codex rollout JSONL
+src/agents/claude/transcript.ts     Advancing through and deduplicating the Claude transcript and subagents
+src/agents/kiro/hook.ts             Kiro's hook triggers: span assembly, tool brackets, deferred stop
+src/agents/kiro/session.ts          Advancing through the Kiro CLI session store (per-turn credits)
+hooks/{codex,claude,kiro}.json      Hook templates install.sh merges into each agent's config
 ```
 
 ---
