@@ -445,8 +445,8 @@ export function drainRollout(path: string, offset: number, captureMessages = fal
           ? structuredClone(callInput ?? messageHistory)
           : [],
         outputMessages: captureMessages ? structuredClone(callOutput) : [],
-        last: usageOf(usage["last_token_usage"]),
-        total: usageOf(usage["total_token_usage"]),
+        last: codexUsage(usage["last_token_usage"]),
+        total: codexUsage(usage["total_token_usage"]),
       });
     }
     callInput = null;
@@ -459,6 +459,21 @@ export function drainRollout(path: string, offset: number, captureMessages = fal
 export interface PerRequestUsage {
   usage: Usage;
   cumulative: Usage;
+}
+
+/**
+ * A token_count usage object. Codex names its prompt-cache writes
+ * `cache_write_input_tokens`; like Claude's `cache_creation_input_tokens` they are a share of
+ * `input_tokens`, and GPT-5.6 and later bill them above the plain input rate, so they are
+ * carried under the canonical key instead of being priced as uncached input.
+ */
+function codexUsage(raw: unknown): Usage {
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return usageOf({
+    ...record,
+    cache_creation_input_tokens:
+      record["cache_creation_input_tokens"] ?? record["cache_write_input_tokens"],
+  });
 }
 
 /**
@@ -498,5 +513,12 @@ export function perRequestUsage(request: RolloutRequest, cumulative: Usage): Per
   if (!usage.total_tokens) {
     usage.total_tokens = usage.input_tokens + usage.output_tokens;
   }
+  // Cache writes are a share of the uncached input. A cumulative saved before this hook read
+  // cache_write_input_tokens holds 0 for them, so the first delta after an upgrade would
+  // carry the session's whole write history; keep it within what this request could write.
+  usage.cache_creation_input_tokens = Math.min(
+    usage.cache_creation_input_tokens,
+    Math.max(0, usage.input_tokens - usage.cached_input_tokens),
+  );
   return { usage, cumulative: updated };
 }

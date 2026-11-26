@@ -1082,3 +1082,36 @@ test("CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=0 keeps them off the data poi
     assert.equal(resource["deployment.environment.name"], "test");
   }
 });
+
+test("Codex cache_write_input_tokens are priced at the cache write rate", async () => {
+  const { drainRollout, perRequestUsage } = await import("./agents/codex/rollout.ts");
+  const { cost, loadPricing } = await import("./core/pricing.ts");
+  const { emptyUsage } = await import("./core/types.ts");
+  const dir = mkdtempSync(join(tmpdir(), "codex-cache-write-"));
+  try {
+    const path = join(dir, "rollout.jsonl");
+    // Shaped like a real 0.163+ record: the write tokens are a share of input_tokens.
+    const counted = { ...usage(13_615, 0, 13, 0), cache_write_input_tokens: 13_573 };
+    writeFileSync(path, tokenCount("2026-11-26T00:00:00.000Z", counted, counted), "utf8");
+    const [request] = drainRollout(path, 0).requests;
+    assert.ok(request);
+    const delta = perRequestUsage(request, emptyUsage());
+    assert.ok(delta);
+    assert.equal(delta.usage.cache_creation_input_tokens, 13_573);
+
+    const breakdown = cost(delta.usage, "gpt-6.2-sol", loadPricing());
+    assert.equal(breakdown.pricingMatched, true);
+    assert.equal(breakdown.uncachedInputTokens, 42);
+    assert.ok(Math.abs(breakdown.cacheWriteCost - (13_573 * 2.5) / 1e6) < 1e-12);
+    assert.ok(Math.abs(breakdown.inputTokenCost - (42 * 2.0) / 1e6) < 1e-12);
+
+    // A cumulative saved before the field was read carries no writes; the next delta must
+    // not bill the session's whole write history to one request.
+    const stale = { ...emptyUsage(), input_tokens: 13_000, total_tokens: 13_000 };
+    const capped = perRequestUsage(request, stale);
+    assert.ok(capped);
+    assert.equal(capped.usage.cache_creation_input_tokens, 615);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

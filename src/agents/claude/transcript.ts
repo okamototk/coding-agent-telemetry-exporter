@@ -49,6 +49,11 @@ function cursorOf(state: HookState, path: string): TranscriptCursor {
   return cursor;
 }
 
+/** `usage.speed`: `"fast"` when the request ran in fast mode, otherwise `"standard"`. */
+function speedOf(raw: unknown): string | null {
+  return raw && typeof raw === "object" ? asString((raw as Record<string, unknown>)["speed"]) : null;
+}
+
 function usageFromClaude(raw: unknown): Usage {
   if (!raw || typeof raw !== "object") {
     return usageOf(null);
@@ -139,6 +144,7 @@ interface RequestGroup {
   turnId: string | null;
   model: string | null;
   effort: string | null;
+  speed: string | null;
   usage: Usage;
   inputMessages: GenAiMessage[];
   outputParts: Record<string, unknown>[];
@@ -229,6 +235,13 @@ export function drainClaudeTranscript(
       continue;
     }
     const entry = record as Record<string, unknown>;
+    // Only conversation records. Since 2.1.300 the transcript also carries
+    // `api-request-blob` records whose `message` replays the request's system and user
+    // content; read as conversation, they would duplicate the captured input messages.
+    const entryType = entry["type"];
+    if (entryType !== "user" && entryType !== "assistant") {
+      continue;
+    }
     const messageRaw = entry["message"];
     const message =
       messageRaw && typeof messageRaw === "object" && !Array.isArray(messageRaw)
@@ -254,6 +267,7 @@ export function drainClaudeTranscript(
             turnId: promptId,
             model: asString(message["model"]),
             effort: asString(entry["effort"]),
+            speed: speedOf(message["usage"]),
             usage: usageFromClaude(message["usage"]),
             inputMessages: captureMessages ? structuredClone(history) : [],
             outputParts: [],
@@ -324,6 +338,7 @@ export function drainClaudeTranscript(
       turnId: group.turnId,
       model: group.model,
       effort: group.effort,
+      speed: group.speed,
       contextWindow: null,
       inputMessages: group.inputMessages,
       outputMessages:

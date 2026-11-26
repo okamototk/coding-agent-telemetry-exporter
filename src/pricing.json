@@ -2,7 +2,8 @@
   "_comment": [
     "Rates in USD per 1M tokens, keyed by the model name the agent reports.",
     "cached_input applies to the cached_input_tokens share of input_tokens.",
-    "cache_creation_5m / cache_creation_1h are Claude's prompt cache write rates.",
+    "cache_creation_5m / cache_creation_1h are Claude's prompt cache write rates;",
+    "cache_creation is OpenAI's (GPT-5.6 and later, at the default 30-minute TTL).",
     "Keys resolve by exact match, then longest prefix match, then default.",
     "Keys are version-qualified on purpose. A family-wide key such as 'claude-haiku'",
     "prefix-matches every generation, so it keeps applying one generation's rates",
@@ -13,13 +14,44 @@
     "'gpt-5' matches 'gpt-5-2025-08-07' but not 'gpt-5.5', and 'claude-opus-5'",
     "does not match 'claude-opus-5-5'.",
     "long_context replaces the rates for a whole request whose input_tokens exceed",
-    "above_input_tokens (OpenAI's >272K tier); the threshold is checked per request.",
+    "above_input_tokens (OpenAI's >272K tier, Claude Haiku 5.5's >100K tier); the",
+    "threshold is checked per request, counting cache reads and writes.",
+    "fast replaces them for a Claude request served in fast mode (usage.speed 'fast', or a",
+    "'-fast' model id); a fast request on a model without it reports pricing_matched=false.",
     "Rates change: in production, point CAT_OTEL_PRICING_FILE at your own table."
   ],
-  "as_of": "2026-10-14",
+  "as_of": "2026-11-26",
   "currency": "USD",
   "default": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
   "per_million_tokens": {
+    "claude-fable-5-2": {
+      "input": 8.0,
+      "cached_input": 0.2,
+      "cache_creation_5m": 10.0,
+      "cache_creation_1h": 16.0,
+      "output": 40.0,
+      "fast": {
+        "input": 16.0,
+        "cached_input": 0.4,
+        "cache_creation_5m": 20.0,
+        "cache_creation_1h": 32.0,
+        "output": 80.0
+      }
+    },
+    "claude-mythos-5-2": {
+      "input": 8.0,
+      "cached_input": 0.2,
+      "cache_creation_5m": 10.0,
+      "cache_creation_1h": 16.0,
+      "output": 40.0,
+      "fast": {
+        "input": 16.0,
+        "cached_input": 0.4,
+        "cache_creation_5m": 20.0,
+        "cache_creation_1h": 32.0,
+        "output": 80.0
+      }
+    },
     "claude-fable-5-1": {
       "input": 10.0,
       "cached_input": 0.25,
@@ -53,21 +85,42 @@
       "cached_input": 0.2,
       "cache_creation_5m": 5.0,
       "cache_creation_1h": 8.0,
-      "output": 20.0
+      "output": 20.0,
+      "fast": {
+        "input": 8.0,
+        "cached_input": 0.4,
+        "cache_creation_5m": 10.0,
+        "cache_creation_1h": 16.0,
+        "output": 40.0
+      }
     },
     "claude-opus-5": {
       "input": 5.0,
       "cached_input": 0.5,
       "cache_creation_5m": 6.25,
       "cache_creation_1h": 10.0,
-      "output": 25.0
+      "output": 25.0,
+      "fast": {
+        "input": 10.0,
+        "cached_input": 1.0,
+        "cache_creation_5m": 12.5,
+        "cache_creation_1h": 20.0,
+        "output": 50.0
+      }
     },
     "claude-opus-4-8": {
       "input": 5.0,
       "cached_input": 0.5,
       "cache_creation_5m": 6.25,
       "cache_creation_1h": 10.0,
-      "output": 25.0
+      "output": 25.0,
+      "fast": {
+        "input": 10.0,
+        "cached_input": 1.0,
+        "cache_creation_5m": 12.5,
+        "cache_creation_1h": 20.0,
+        "output": 50.0
+      }
     },
     "claude-opus-4-7": {
       "input": 5.0,
@@ -92,7 +145,7 @@
     },
     "claude-sonnet-5-5": {
       "input": 2.0,
-      "cached_input": 0.2,
+      "cached_input": 0.1,
       "cache_creation_5m": 2.5,
       "cache_creation_1h": 4.0,
       "output": 10.0
@@ -117,6 +170,21 @@
       "cache_creation_5m": 3.75,
       "cache_creation_1h": 6.0,
       "output": 15.0
+    },
+    "claude-haiku-5-5": {
+      "input": 0.1,
+      "cached_input": 0.01,
+      "cache_creation_5m": 0.125,
+      "cache_creation_1h": 0.2,
+      "output": 0.5,
+      "long_context": {
+        "above_input_tokens": 100000,
+        "input": 0.5,
+        "cached_input": 0.05,
+        "cache_creation_5m": 0.625,
+        "cache_creation_1h": 1.0,
+        "output": 2.5
+      }
     },
     "claude-haiku-4-5": {
       "input": 1.0,
@@ -146,40 +214,45 @@
       "cache_creation_1h": 6.0,
       "output": 15.0
     },
-    "claude-3-5-haiku-20241022": {
-      "input": 0.8,
-      "cached_input": 0.08,
-      "cache_creation_5m": 1.0,
-      "cache_creation_1h": 1.6,
-      "output": 4.0
+    "gpt-6.2-astra": {
+      "input": 8.0, "cached_input": 0.4, "cache_creation": 10.0, "output": 40.0,
+      "long_context": { "above_input_tokens": 272000, "input": 16.0, "cached_input": 0.8, "cache_creation": 20.0, "output": 60.0 }
+    },
+    "gpt-6.2-sol": {
+      "input": 2.0, "cached_input": 0.1, "cache_creation": 2.5, "output": 10.0,
+      "long_context": { "above_input_tokens": 272000, "input": 4.0, "cached_input": 0.2, "cache_creation": 5.0, "output": 15.0 }
     },
     "gpt-6-astra": {
-      "input": 10.0, "cached_input": 1.0, "output": 50.0,
-      "long_context": { "above_input_tokens": 272000, "input": 20.0, "cached_input": 2.0, "output": 75.0 }
+      "input": 10.0, "cached_input": 1.0, "cache_creation": 12.5, "output": 50.0,
+      "long_context": { "above_input_tokens": 272000, "input": 20.0, "cached_input": 2.0, "cache_creation": 25.0, "output": 75.0 }
     },
     "gpt-6.1-sol": {
-      "input": 2.0, "cached_input": 0.1, "output": 10.0,
-      "long_context": { "above_input_tokens": 272000, "input": 4.0, "cached_input": 0.2, "output": 15.0 }
+      "input": 2.0, "cached_input": 0.1, "cache_creation": 2.5, "output": 10.0,
+      "long_context": { "above_input_tokens": 272000, "input": 4.0, "cached_input": 0.2, "cache_creation": 5.0, "output": 15.0 }
+    },
+    "gpt-6.1-terra": {
+      "input": 1.0, "cached_input": 0.05, "cache_creation": 1.25, "output": 5.0,
+      "long_context": { "above_input_tokens": 272000, "input": 2.0, "cached_input": 0.1, "cache_creation": 2.5, "output": 7.5 }
     },
     "gpt-6-sol": {
-      "input": 2.0, "cached_input": 0.2, "output": 10.0,
-      "long_context": { "above_input_tokens": 272000, "input": 4.0, "cached_input": 0.4, "output": 15.0 }
+      "input": 2.0, "cached_input": 0.2, "cache_creation": 2.5, "output": 10.0,
+      "long_context": { "above_input_tokens": 272000, "input": 4.0, "cached_input": 0.4, "cache_creation": 5.0, "output": 15.0 }
     },
     "gpt-6-luna": {
-      "input": 0.1, "cached_input": 0.01, "output": 0.5,
-      "long_context": { "above_input_tokens": 272000, "input": 0.2, "cached_input": 0.02, "output": 0.75 }
+      "input": 0.1, "cached_input": 0.01, "cache_creation": 0.125, "output": 0.5,
+      "long_context": { "above_input_tokens": 272000, "input": 0.2, "cached_input": 0.02, "cache_creation": 0.25, "output": 0.75 }
     },
     "gpt-5.6-sol": {
-      "input": 4.0, "cached_input": 0.4, "output": 20.0,
-      "long_context": { "above_input_tokens": 272000, "input": 8.0, "cached_input": 0.8, "output": 30.0 }
+      "input": 4.0, "cached_input": 0.4, "cache_creation": 5.0, "output": 20.0,
+      "long_context": { "above_input_tokens": 272000, "input": 8.0, "cached_input": 0.8, "cache_creation": 10.0, "output": 30.0 }
     },
     "gpt-5.6-terra": {
-      "input": 2.0, "cached_input": 0.2, "output": 12.0,
-      "long_context": { "above_input_tokens": 272000, "input": 4.0, "cached_input": 0.4, "output": 18.0 }
+      "input": 2.0, "cached_input": 0.2, "cache_creation": 2.5, "output": 12.0,
+      "long_context": { "above_input_tokens": 272000, "input": 4.0, "cached_input": 0.4, "cache_creation": 5.0, "output": 18.0 }
     },
     "gpt-5.6-luna": {
-      "input": 0.2, "cached_input": 0.02, "output": 1.2,
-      "long_context": { "above_input_tokens": 272000, "input": 0.4, "cached_input": 0.04, "output": 1.8 }
+      "input": 0.2, "cached_input": 0.02, "cache_creation": 0.25, "output": 1.2,
+      "long_context": { "above_input_tokens": 272000, "input": 0.4, "cached_input": 0.04, "cache_creation": 0.5, "output": 1.8 }
     },
     "gpt-5.5-pro": {
       "input": 30.0, "output": 180.0,
@@ -201,18 +274,13 @@
     },
     "gpt-5.3-codex": { "input": 1.75, "cached_input": 0.175, "output": 14.0 },
     "gpt-5.2-pro": { "input": 21.0, "output": 168.0 },
-    "gpt-5.2-codex": { "input": 1.75, "cached_input": 0.175, "output": 14.0 },
     "gpt-5.2": { "input": 1.75, "cached_input": 0.175, "output": 14.0 },
-    "gpt-5.1-codex-max": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
-    "gpt-5.1-codex-mini": { "input": 0.25, "cached_input": 0.025, "output": 2.0 },
     "gpt-5.1": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
     "gpt-5-mini": { "input": 0.25, "cached_input": 0.025, "output": 2.0 },
     "gpt-5-nano": { "input": 0.05, "cached_input": 0.005, "output": 0.4 },
     "gpt-5": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
     "gpt-4.1-mini": { "input": 0.4, "cached_input": 0.1, "output": 1.6 },
     "gpt-4.1": { "input": 2.0, "cached_input": 0.5, "output": 8.0 },
-    "o4-mini": { "input": 1.1, "cached_input": 0.275, "output": 4.4 },
-    "o3-mini": { "input": 1.1, "cached_input": 0.55, "output": 4.4 },
     "o3": { "input": 2.0, "cached_input": 0.5, "output": 8.0 }
   }
 }

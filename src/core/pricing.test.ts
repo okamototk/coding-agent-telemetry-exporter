@@ -38,13 +38,13 @@ test("a dated snapshot resolves through its version-qualified key", () => {
 });
 
 test("the longest prefix wins over a shorter one", () => {
-  // "gpt-5.1-codex-max-xhigh" must pick "gpt-5.1-codex-max", not "gpt-5.1".
-  const [rates, matched] = ratesFor("gpt-5.1-codex-max-xhigh", BUNDLED);
+  // "gpt-5.5-pro-xhigh" must pick "gpt-5.5-pro", not "gpt-5.5".
+  const [rates, matched] = ratesFor("gpt-5.5-pro-xhigh", BUNDLED);
   assert.equal(matched, true);
-  assert.equal(rates.input, 1.25);
+  assert.equal(rates.input, 30);
 
-  const [mini] = ratesFor("gpt-5.1-codex-mini-2026", BUNDLED);
-  assert.equal(mini.input, 0.25);
+  const [mini] = ratesFor("gpt-5.4-mini-2026-03-17", BUNDLED);
+  assert.equal(mini.input, 0.75);
 });
 
 test("no family-wide Claude key spans a generation", () => {
@@ -56,7 +56,7 @@ test("no family-wide Claude key spans a generation", () => {
     }
     assert.match(
       key,
-      /^claude-(fable|mythos|opus|sonnet|haiku|3-5-haiku)-\d/,
+      /^claude-(fable|mythos|opus|sonnet|haiku)-\d/,
       `${key} is not version-qualified`,
     );
   }
@@ -69,8 +69,8 @@ test("generations that are priced differently do not share rates", () => {
     ratesFor("claude-sonnet-4-6", BUNDLED)[0].input,
   );
   assert.notEqual(
+    ratesFor("claude-haiku-5-5", BUNDLED)[0].input,
     ratesFor("claude-haiku-4-5", BUNDLED)[0].input,
-    ratesFor("claude-3-5-haiku-20241022", BUNDLED)[0].input,
   );
   assert.notEqual(
     ratesFor("claude-opus-5", BUNDLED)[0].input,
@@ -83,7 +83,7 @@ test("a point release resolves to its own key, not the shorter one it extends", 
     ["claude-opus-5-5", "claude-opus-5-5"],
     ["gpt-5.5-xhigh", "gpt-5.5"],
     ["gpt-5.4-mini", "gpt-5.4-mini"],
-    ["gpt-5.2-codex", "gpt-5.2-codex"],
+    ["gpt-5.2-pro", "gpt-5.2-pro"],
   ] as const) {
     const [rates, matched] = ratesFor(model, BUNDLED);
     assert.equal(matched, true, model);
@@ -146,7 +146,7 @@ test("the bundled OpenAI long-context tiers are 2x input and cache, 1.5x output"
   let tiers = 0;
   for (const [model, rates] of Object.entries(BUNDLED.per_million_tokens)) {
     const long = rates.long_context;
-    if (!long) {
+    if (!long || !model.startsWith("gpt-")) {
       continue;
     }
     tiers += 1;
@@ -156,6 +156,33 @@ test("the bundled OpenAI long-context tiers are 2x input and cache, 1.5x output"
     assert.ok(Math.abs((long.output ?? 0) - (rates.output ?? 0) * 1.5) < 1e-9, `${model} output`);
   }
   assert.ok(tiers > 0);
+});
+
+test("Claude Haiku 5.5 past 100K prompt tokens pays 5x on every rate, cache writes included", () => {
+  const rates = BUNDLED.per_million_tokens["claude-haiku-5-5"];
+  assert.ok(rates?.long_context);
+  const long = rates.long_context;
+  assert.equal(long.above_input_tokens, 100_000);
+  for (const key of ["input", "cached_input", "cache_creation_5m", "cache_creation_1h", "output"] as const) {
+    assert.ok(Math.abs((long[key] ?? 0) - (rates[key] ?? 0) * 5) < 1e-9, key);
+  }
+  // The prompt length counts cache reads and writes: 40K uncached + 50K read + 20K written
+  // is 110K, over the threshold although no one share is.
+  const past = cost(
+    usage({
+      input_tokens: 110_000,
+      cached_input_tokens: 50_000,
+      cache_creation_input_tokens: 20_000,
+      cache_creation_5m_input_tokens: 20_000,
+      output_tokens: 1_000,
+    }),
+    "claude-haiku-5-5",
+    BUNDLED,
+  );
+  assert.ok(Math.abs(past.inputTokenCost - (40_000 * 0.5) / 1e6) < 1e-12);
+  assert.ok(Math.abs(past.cacheReadCost - (50_000 * 0.05) / 1e6) < 1e-12);
+  assert.ok(Math.abs(past.cacheWriteCost - (20_000 * 0.625) / 1e6) < 1e-12);
+  assert.ok(Math.abs(past.outputCost - (1_000 * 2.5) / 1e6) < 1e-12);
 });
 
 test("an unknown model falls to default and reports pricing_matched=false", () => {
@@ -251,9 +278,14 @@ test("negative or missing counts never produce a negative cost", () => {
 
 test("the bundled Claude rates follow the published cache multipliers", () => {
   // Cache writes are 1.25x (5m) and 2x (1h) the base input rate; reads are 0.1x, except on
-  // Fable 5.1 / Mythos 5.1, which are 0.025x, and Opus 5.5, which is 0.05x.
-  const quarterRead = new Set(["claude-fable-5-1", "claude-mythos-5-1"]);
-  const halfRead = new Set(["claude-opus-5-5"]);
+  // Fable / Mythos 5.1 and 5.2, which are 0.025x, and Opus 5.5 / Sonnet 5.5, which are 0.05x.
+  const quarterRead = new Set([
+    "claude-fable-5-2",
+    "claude-mythos-5-2",
+    "claude-fable-5-1",
+    "claude-mythos-5-1",
+  ]);
+  const halfRead = new Set(["claude-opus-5-5", "claude-sonnet-5-5"]);
   for (const [model, rates] of Object.entries(BUNDLED.per_million_tokens)) {
     if (!model.startsWith("claude-")) {
       continue;
@@ -274,4 +306,79 @@ test("the bundled Claude rates follow the published cache multipliers", () => {
       `${model} 1h cache write`,
     );
   }
+});
+
+test("a fast-mode request is priced at the fast tier in full, cache rates included", () => {
+  const u = usage({
+    input_tokens: 300_000,
+    cached_input_tokens: 100_000,
+    cache_creation_input_tokens: 50_000,
+    cache_creation_5m_input_tokens: 30_000,
+    cache_creation_1h_input_tokens: 20_000,
+    output_tokens: 10_000,
+  });
+  const standard = cost(u, "claude-opus-5-5", BUNDLED, "standard");
+  const fast = cost(u, "claude-opus-5-5", BUNDLED, "fast");
+  assert.equal(fast.pricingMatched, true);
+  // Opus 5.5 fast: $8 / $40, cache read 0.05x, writes 1.25x / 2x.
+  assert.ok(Math.abs(fast.inputTokenCost - (150_000 * 8) / 1e6) < 1e-12);
+  assert.ok(Math.abs(fast.cacheReadCost - (100_000 * 0.4) / 1e6) < 1e-12);
+  assert.ok(Math.abs(fast.cacheWriteCost - (30_000 * 10 + 20_000 * 16) / 1e6) < 1e-12);
+  assert.ok(Math.abs(fast.outputCost - (10_000 * 40) / 1e6) < 1e-12);
+  assert.ok(Math.abs(fast.totalCost - standard.totalCost * 2) < 1e-9);
+  // No speed, or "standard", is the base rate.
+  assert.equal(cost(u, "claude-opus-5-5", BUNDLED).totalCost, standard.totalCost);
+});
+
+test("a -fast model id (Microsoft Foundry) is priced at the fast tier", () => {
+  const u = usage({ input_tokens: 1_000_000, output_tokens: 1_000_000 });
+  const breakdown = cost(u, "claude-opus-5-5-fast", BUNDLED);
+  assert.equal(breakdown.pricingMatched, true);
+  assert.equal(breakdown.totalCost, 8 + 40);
+});
+
+test("a fast request on a model without fast rates reports pricing_matched=false", () => {
+  const u = usage({ input_tokens: 1_000_000, output_tokens: 1_000_000 });
+  const breakdown = cost(u, "claude-sonnet-5-5", BUNDLED, "fast");
+  assert.equal(breakdown.pricingMatched, false);
+  // Still priced, at the standard rates, rather than dropped.
+  assert.equal(breakdown.totalCost, 2 + 10);
+});
+
+test("the fast tier replaces the long-context tier rather than stacking on it", () => {
+  const table: Pricing = {
+    currency: "USD",
+    default: {},
+    per_million_tokens: {
+      m: {
+        input: 1,
+        output: 1,
+        long_context: { above_input_tokens: 10, input: 5, output: 5 },
+        fast: { input: 2, output: 2 },
+      },
+    },
+  };
+  const u = usage({ input_tokens: 1_000_000, output_tokens: 1_000_000 });
+  assert.equal(cost(u, "m", table, "fast").totalCost, 4);
+  assert.equal(cost(u, "m", table).totalCost, 10);
+});
+
+test("the bundled Claude fast tiers keep each model's cache multipliers", () => {
+  let tiers = 0;
+  for (const [model, rates] of Object.entries(BUNDLED.per_million_tokens)) {
+    const fast = rates.fast;
+    if (!fast) {
+      continue;
+    }
+    tiers += 1;
+    const input = fast.input ?? 0;
+    const base = rates.input ?? 0;
+    assert.ok(input > base, model);
+    // Prompt-caching multipliers apply on top of fast pricing.
+    for (const key of ["cached_input", "cache_creation_5m", "cache_creation_1h"] as const) {
+      const multiplier = (rates[key] ?? 0) / base;
+      assert.ok(Math.abs((fast[key] ?? 0) - input * multiplier) < 1e-9, `${model} ${key}`);
+    }
+  }
+  assert.equal(tiers, 5);
 });

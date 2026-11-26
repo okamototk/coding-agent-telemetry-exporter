@@ -280,6 +280,14 @@ function stashPending(state: HookState, perTurn: Map<string, TurnBucket>): void 
   }
 }
 
+/** Points the session at `path`, reading it from the start only if it is a different file. */
+function useRollout(state: HookState, path: string | null): void {
+  if (path && path !== state.rollout_path) {
+    state.rollout_path = path;
+    state.rollout_offset = 0;
+  }
+}
+
 /** Reads the rollout forward, returning the LLM request spans and the per-turn totals. */
 function syncRollout(
   state: HookState,
@@ -298,7 +306,12 @@ function syncRollout(
     debug(`transcript not found session=${state.session_id}`, state.runtime);
     return { spans, perTurn };
   }
-  state.rollout_path = path;
+  if (state.runtime === "claude") {
+    // Subagent transcripts come and go here; the cursors are per file, not this offset.
+    state.rollout_path = path;
+  } else {
+    useRollout(state, path);
+  }
 
   const capture = enabled("CAPTURE_PROMPTS");
   const place = placement();
@@ -337,7 +350,7 @@ function syncRollout(
 
     const turnId = request.turnId || fallbackTurn;
     const model = request.model || state.rollout_context.model || payload.model || null;
-    const breakdown = cost(usage, model, pricing);
+    const breakdown = cost(usage, model, pricing, request.speed);
 
     const turn: TurnState = state.turns[turnId] ?? {};
     const endNs = request.endNs ?? nowNs();
@@ -353,6 +366,7 @@ function syncRollout(
         ["gen_ai.operation.name", "chat"],
         turnAttr(state, turnId),
         ["gen_ai.request.reasoning.level", request.effort],
+        [`${state.runtime}.request.speed`, request.speed ?? null],
         [`${state.runtime}.model.context_window`, request.contextWindow],
         ...usageAttrs(usage, breakdown, state.runtime),
       ],
@@ -464,19 +478,14 @@ function handleSessionStart(state: HookState, payload: HookPayload): OtlpSpan[] 
   state.cwd = payload.cwd;
   state.model = payload.model;
   state.source = payload.source;
-  if (
-    payload.source === "resume" ||
-    payload.source === "clear" ||
-    payload.source === "compact" ||
-    payload.source === "fork"
-  ) {
-    // A different rollout takes over, so the offset is reset.
-    state.rollout_path = payload.transcript_path ?? null;
-    state.rollout_offset = 0;
-    if (state.runtime === "claude" && payload.transcript_path) {
-      delete state.transcript_cursors[payload.transcript_path];
-    }
-  }
+  // resume / clear / compact / fork may or may not switch files: Claude Code keeps appending
+  // to the same transcript after /compact and --resume, and a resumed Codex session appends
+  // to its rollout. Only a different file starts from offset 0. Rewinding the same file would
+  // re-read requests that were already sent — Claude's cursor would lose its seen ids, and a
+  // Codex total below the saved cumulative would pass for a counter reset — so they would be
+  // emitted and billed twice. A file rewritten in place is caught by its size instead (see
+  // drainRollout / drainClaudeTranscript). Claude's cursors are per file, so nothing to do.
+  useRollout(state, payload.transcript_path ?? null);
   return [];
 }
 

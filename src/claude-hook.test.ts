@@ -114,6 +114,20 @@ test("folds the Claude transcript, cache usage, tools, and subagents into one tu
         timestamp: "2026-08-25T01:00:00.000Z",
         message: { role: "user", content: "調査して" },
       }),
+      // Claude Code 2.1.300+ replays each request's system and user content in
+      // api-request-blob records. They are not conversation and must not be captured.
+      line({
+        type: "api-request-blob",
+        sessionId,
+        hash: "blob-1",
+        message: { role: "user", content: [{ type: "text", text: "BLOB-REPLAY" }] },
+      }),
+      line({
+        type: "api-request-blob",
+        sessionId,
+        hash: "blob-2",
+        message: { role: "system", content: [{ type: "text", text: "BLOB-SYSTEM" }] },
+      }),
       // The same API message is split across a thinking line and a tool_use line, and the
       // usage is repeated on both.
       assistant(
@@ -307,6 +321,12 @@ test("folds the Claude transcript, cache usage, tools, and subagents into one tu
   assert.equal(Number(cached["gen_ai.usage.reasoning.output_tokens"]), 4);
   assert.equal(cached["gen_ai.request.model"], model);
   assert.equal(cached["gen_ai.agent.name"], "claude-code");
+  // api-request-blob records stay out of the captured prompt.
+  for (const span of spans) {
+    const serialized = JSON.stringify(span.attributes);
+    assert.equal(serialized.includes("BLOB-REPLAY"), false, span.name);
+    assert.equal(serialized.includes("BLOB-SYSTEM"), false, span.name);
+  }
 
   // Cost for the same request. claude-sonnet-4-5 in pricing.json: input 3.0, cached_input
   // 0.3, cache_creation_5m 3.75, cache_creation_1h 6.0, output 15.0 per 1M. The rates are

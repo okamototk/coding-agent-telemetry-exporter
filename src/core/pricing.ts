@@ -20,10 +20,26 @@ export interface Rates {
    * replace the base rates for the whole request.
    */
   long_context?: LongContextRates;
+  /**
+   * Rates for a request served in fast mode (Claude's `usage.speed: "fast"`). They apply
+   * across the full context window, so they replace the base rates and any long-context tier.
+   */
+  fast?: TierRates;
 }
 
-export interface LongContextRates extends Omit<Rates, "long_context"> {
+/** A rate set that stands in for the base rates; it cannot nest further tiers. */
+export type TierRates = Omit<Rates, "long_context" | "fast">;
+
+export interface LongContextRates extends TierRates {
   above_input_tokens: number;
+}
+
+/**
+ * Whether a request ran in fast mode: the transcript's `usage.speed`, or a model id with the
+ * `-fast` suffix that Microsoft Foundry gives its fast deployments (which report no speed).
+ */
+export function isFast(model: string | null | undefined, speed: string | null | undefined): boolean {
+  return speed === "fast" || (typeof model === "string" && model.endsWith("-fast"));
 }
 
 export interface Pricing {
@@ -200,8 +216,15 @@ export function creditCost(credits: number, pricing: Pricing): CostBreakdown | n
   };
 }
 
-/** The rates that apply to a request of `inputTokens`, switching to the long-context tier past its threshold. */
-function ratesForSize(rates: Rates, inputTokens: number): Rates {
+/**
+ * The rates that apply to one request: the fast tier for a fast request, otherwise the
+ * long-context tier past its threshold, otherwise the base rates. `null` when the request ran
+ * in fast mode but the table has no fast rates for the model.
+ */
+function ratesForRequest(rates: Rates, inputTokens: number, fast: boolean): Rates | null {
+  if (fast) {
+    return rates.fast ? { ...rates, ...rates.fast } : null;
+  }
   const long = rates.long_context;
   if (!long || !(inputTokens > long.above_input_tokens)) {
     return rates;
@@ -215,14 +238,23 @@ function ratesForSize(rates: Rates, inputTokens: number): Rates {
  * by the size of one prompt, so a sum over several requests would cross the threshold
  * without any one of them doing so.
  */
-export function cost(usage: Usage, model: string | null | undefined, pricing: Pricing): CostBreakdown {
-  const [baseRates, matched] = ratesFor(model, pricing);
+export function cost(
+  usage: Usage,
+  model: string | null | undefined,
+  pricing: Pricing,
+  speed?: string | null,
+): CostBreakdown {
+  const [baseRates, found] = ratesFor(model, pricing);
   const cached = Math.max(0, usage.cached_input_tokens);
   const cacheCreation = Math.max(0, usage.cache_creation_input_tokens);
   const cacheCreation5m = Math.max(0, usage.cache_creation_5m_input_tokens);
   const cacheCreation1h = Math.max(0, usage.cache_creation_1h_input_tokens);
   const totalInput = Math.max(0, usage.input_tokens);
-  const rates = ratesForSize(baseRates, totalInput);
+  // A fast request with no fast rates is priced at the standard rates, which understates it,
+  // so it reports pricing_matched=false rather than passing for a priced request.
+  const tiered = ratesForRequest(baseRates, totalInput, isFast(model, speed));
+  const rates = tiered ?? baseRates;
+  const matched = found && tiered !== null;
   // The canonical input_tokens is a total that includes cache reads and creation.
   const uncached = Math.max(0, totalInput - cached - cacheCreation);
   const output = Math.max(0, usage.output_tokens);

@@ -103,6 +103,8 @@ export interface RolloutRequest {
   turnId: string | null;
   model: string | null;
   effort: string | null;
+  /** Claude: `usage.speed` (`"fast"` / `"standard"`), which decides the rate tier. */
+  speed?: string | null;
   contextWindow: number | null;
   /** Message history passed to this LLM call, as far as the rollout can reconstruct it. */
   inputMessages: GenAiMessage[];

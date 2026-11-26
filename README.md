@@ -143,17 +143,17 @@ validated before any of them is written, so a syntax error in one config cannot 
 others half-configured.
 
 **On first launch, Codex asks you to trust the hook.** Codex tracks trust by recording the
-hash of the hook command in `[hooks.state]` of `~/.codex/config.toml`, so the hook does not
-run until you approve it (the TUI's hook browser can also enable and disable it). Changing
-the command string breaks that trust, so switching between `--source` and `--dist` requires
-approving again.
+hash of the hook in `[hooks.state]` of `~/.codex/config.toml`, so the hook does not
+run until you approve it (the TUI's hook browser can also enable and disable it). The hash
+covers the event, the matcher, and the whole handler (`command`, `timeout`, …), so
+switching between `--source` and `--dist`, or editing a timeout, requires approving again.
 
 Four events are registered with Codex. Claude Code gets those same four plus
 `SubagentStop`.
 
 | Event | What it does |
 | --- | --- |
-| `SessionStart` | Records the session start time and model. On `resume` / `clear`, resets the rollout offset |
+| `SessionStart` | Records the session start time and model. Starts reading from the top only when the transcript is a different file; after `compact` / `resume` on the same file it carries on where it left off, so nothing is counted twice |
 | `UserPromptSubmit` | Records the turn start time and, if opted in, the prompt text |
 | `Stop` | Reads the rollout forward and sends the LLM request spans and the turn span |
 | `SessionEnd` | Collects the LLM requests, tool calls, and turn spans left over after `Stop` |
@@ -308,7 +308,7 @@ still under review puts in the registry — see
 | `codex.usage.cost` | Estimated cost. **An extension attribute, undefined in the released semconv** |
 | `codex.usage.input_cost` / `codex.usage.output_cost` | The cost breakdown (the input side already has cache rates applied). Omitted when the amount was metered rather than derived from per-token rates |
 | `codex.usage.cost.currency` | Default `USD` |
-| `codex.usage.cost.pricing_matched` | `false` signals the model was not in the rate table and `default` rates were used. Omitted for a metered amount, where no rate table applies |
+| `codex.usage.cost.pricing_matched` | `false` signals the model was not in the rate table and `default` rates were used, or that a fast-mode request was priced at standard rates because the table has no `fast` tier for the model. Omitted for a metered amount, where no rate table applies |
 | `kiro.usage.credits` | **Kiro only.** The plan credits the operation consumed, exactly as Kiro metered them. The token attributes above are absent whenever Kiro reported no token counts |
 | `kiro.usage.tokens.apportioned` | **Kiro only.** `true` on a `chat` span whose token counts are this hook's credit-weighted share of a per-turn total |
 | `gen_ai.usage.cost.amount` | The same cost under the semconv name. **From an unmerged draft; see below. LLM request spans only** |
@@ -388,6 +388,7 @@ The custom attributes that remain, and why:
 | `codex.model.context_window` | No attribute for a model's context length (`gen_ai.request.max_tokens` is an output cap, a different concept) |
 | `codex.llm.request.count` / `codex.tool.call.count` | The same values exist as the `gen_ai.invoke_agent.inference_calls` / `tool_calls` metrics, but there is no span-attribute definition |
 | `codex.cwd` / `codex.originator` / `codex.permission_mode` | No attributes for the working directory, the calling UI, or the permission mode |
+| `claude.request.speed` | Claude's `usage.speed` (`standard` / `fast`), which selects the fast-mode rate tier. **LLM request spans only.** No semconv attribute for a serving speed |
 | `claude.agent.id` | `gen_ai.agent.id` is a stable, provider-issued agent resource ID; putting a transient in-process instance ID there is NOT RECOMMENDED |
 | `kiro.llm.request.attempts` | Requests Kiro actually sent, retries included; higher than `kiro.llm.request.count` when a request was retried. No semconv attribute counts attempts |
 | `kiro.context.usage_percentage` / `kiro.turn.end_reason` | How full the context window was at the end of the turn, and how the turn ended. Neither has a semconv counterpart |
@@ -668,16 +669,20 @@ found.
 
 ```json
 {
-  "as_of": "2026-10-14",
+  "as_of": "2026-11-26",
   "currency": "USD",
   "default": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
   "per_million_tokens": {
-    "claude-sonnet-5-5": {
-      "input": 2.0,
+    "claude-opus-5-5": {
+      "input": 4.0,
       "cached_input": 0.2,
-      "cache_creation_5m": 2.5,
-      "cache_creation_1h": 4.0,
-      "output": 10.0
+      "cache_creation_5m": 5.0,
+      "cache_creation_1h": 8.0,
+      "output": 20.0,
+      "fast": {
+        "input": 8.0, "cached_input": 0.4, "cache_creation_5m": 10.0, "cache_creation_1h": 16.0,
+        "output": 40.0
+      }
     },
     "gpt-5.5": {
       "input": 5.0, "cached_input": 0.5, "output": 30.0,
@@ -692,10 +697,19 @@ found.
 `above_input_tokens` — OpenAI's long-context tier, which bills the **whole** request at the
 higher rates, not just the tokens past the threshold. The threshold is checked per request;
 a turn's cost is the sum of its requests', so several short requests never add up to a long
-one. Fields the tier leaves out keep their base rates.
+one. Fields the tier leaves out keep their base rates. Claude Haiku 5.5 has the same kind of
+tier above 100K prompt tokens, counting cache reads and writes.
+
+`fast` holds the rates for a Claude request served in fast mode — the transcript's
+`usage.speed` is `"fast"`, or the model id carries Microsoft Foundry's `-fast` suffix. Fast
+mode is priced the same across the whole context window, so `fast` replaces both the base
+rates and any `long_context` tier; the cache multipliers are already applied in it. A fast
+request on a model with no `fast` entry is priced at standard rates and flagged
+`pricing_matched=false`, since that figure understates it.
 
 Cost is computed as follows, treating `input_tokens` as a total that includes
-`cached_input_tokens` **and** `cache_creation_input_tokens`. A cache write is charged at its
+`cached_input_tokens` **and** `cache_creation_input_tokens` (Codex's
+`cache_write_input_tokens`, billed from GPT-5.6 on at the 30-minute write rate). A cache write is charged at its
 own TTL's rate, falling back to `cache_creation` and then to `input` when the table gives no
 more specific one.
 
