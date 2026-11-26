@@ -513,7 +513,8 @@ test("reported token counts are apportioned over the turn's requests", async () 
 function runHook(payload: unknown, environment: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [HOOK, "--runtime=kiro"], {
-      env: environment,
+      // The real entry point also checks for a newer rate table; keep tests off the network.
+      env: { CAT_OTEL_PRICING_UPDATE: "0", ...environment },
       stdio: "pipe",
     });
     const stdout: Buffer[] = [];

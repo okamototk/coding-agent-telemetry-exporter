@@ -322,7 +322,11 @@ function writeRollout(path: string, options: { secondRequest: boolean }): void {
  */
 function runHook(payload: unknown, environment: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [HOOK], { env: environment, stdio: "pipe" });
+    // The real entry point also checks for a newer rate table; keep tests off the network.
+    const child = spawn(process.execPath, [HOOK], {
+      env: { CAT_OTEL_PRICING_UPDATE: "0", ...environment },
+      stdio: "pipe",
+    });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
@@ -1085,7 +1089,7 @@ test("CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=0 keeps them off the data poi
 
 test("Codex cache_write_input_tokens are priced at the cache write rate", async () => {
   const { drainRollout, perRequestUsage } = await import("./agents/codex/rollout.ts");
-  const { cost, loadPricing } = await import("./core/pricing.ts");
+  const { bundledPricing, cost } = await import("./core/pricing.ts");
   const { emptyUsage } = await import("./core/types.ts");
   const dir = mkdtempSync(join(tmpdir(), "codex-cache-write-"));
   try {
@@ -1099,7 +1103,7 @@ test("Codex cache_write_input_tokens are priced at the cache write rate", async 
     assert.ok(delta);
     assert.equal(delta.usage.cache_creation_input_tokens, 13_573);
 
-    const breakdown = cost(delta.usage, "gpt-6.2-sol", loadPricing());
+    const breakdown = cost(delta.usage, "gpt-6.2-sol", bundledPricing());
     assert.equal(breakdown.pricingMatched, true);
     assert.equal(breakdown.uncachedInputTokens, 42);
     assert.ok(Math.abs(breakdown.cacheWriteCost - (13_573 * 2.5) / 1e6) < 1e-12);

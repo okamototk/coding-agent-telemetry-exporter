@@ -113,6 +113,12 @@
  *                                     detached process (default 1). Inline blocks the turn
  *                                     for the wait above and still misses the last turn,
  *                                     because Kiro writes the store after the hook exits
+ *     CAT_OTEL_PRICING_UPDATE         0 to keep the bundled rate table instead of fetching a
+ *                                     newer one from the project's main branch (default 1;
+ *                                     always off when CAT_OTEL_PRICING_FILE is set)
+ *     CAT_OTEL_PRICING_UPDATE_HOURS   How often to check for a newer table. Default 24
+ *     CAT_OTEL_PRICING_URL            Where to fetch it. Default the GitHub raw URL of
+ *                                     src/pricing.json on main
  *     CAT_OTEL_DEBUG                  1 to log details to hook.log in the state directory
  *     CAT_OTEL_DISABLE                1 to return immediately without doing anything
  */
@@ -140,6 +146,7 @@ import {
   type OtlpSpan,
 } from "./otel/otlp.ts";
 import { cost, loadPricing, type CostBreakdown, type Pricing } from "./core/pricing.ts";
+import { refreshPricing } from "./core/pricing-update.ts";
 import { drainRollout, perRequestUsage, resolveRollout } from "./agents/codex/rollout.ts";
 import {
   agentName,
@@ -688,7 +695,7 @@ export async function processPayload(
     return [];
   }
 
-  const pricing = loadPricing();
+  const pricing = loadPricing(runtime);
   const metrics = newMetricStore();
   // The state file's read-modify-write is serialized against other hook processes; the export
   // below deliberately sits outside it, being the slow part and needing no state.
@@ -751,7 +758,13 @@ export async function main(): Promise<number> {
         if (await handedOff(payload, runtime)) {
           debug(`event=${event} deferred`, runtime);
         } else {
-          const spans = await processPayload(payload, runtime);
+          // The rate-table check runs alongside the export rather than after it; what it
+          // fetches applies from the next event. Not in the Kiro hand-off above, whose parent
+          // must exit at once.
+          const [spans] = await Promise.all([
+            processPayload(payload, runtime),
+            refreshPricing(runtime),
+          ]);
           debug(`event=${event} spans=${spans.length}`, runtime);
         }
       }

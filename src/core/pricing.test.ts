@@ -3,10 +3,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cost, loadPricing, ratesFor, type Pricing } from "./pricing.ts";
+import { bundledPricing, cost, ratesFor, type Pricing } from "./pricing.ts";
 import { emptyUsage, type Usage } from "./types.ts";
 
-const BUNDLED = loadPricing();
+// The shipped table, not whatever a download left in this machine's state directory.
+const BUNDLED = bundledPricing();
 
 function usage(parts: Partial<Usage>): Usage {
   return { ...emptyUsage(), ...parts };

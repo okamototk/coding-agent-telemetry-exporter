@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { debug, numberEnv } from "./env.ts";
-import type { Usage } from "./types.ts";
+import { debug, flag, numberEnv, stateDir } from "./env.ts";
+import type { AgentRuntime, Usage } from "./types.ts";
 
 export interface Rates {
   input?: number;
@@ -82,16 +82,30 @@ const FALLBACK_PRICING: Pricing = {
   per_million_tokens: {},
 };
 
+/**
+ * The rate-table format this code prices correctly. A downloaded table must carry exactly
+ * this `schema`: a table that adds a field changing the price (a new tier, say) bumps it, so
+ * an older copy of the hook keeps its own table rather than silently ignoring the new field.
+ */
+export const PRICING_SCHEMA = 1;
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-function pricingCandidates(): string[] {
-  const override = process.env["CAT_OTEL_PRICING_FILE"];
-  if (override) {
-    return [override];
-  }
-  // This module sits in core/, one level below the src/ (or, after a build, dist/) root that
-  // holds the rate table.
-  return [join(HERE, "..", "pricing.json")];
+/** The table shipped with the code. This module sits in core/, one level below src/ or dist/. */
+const BUNDLED_PATH = join(HERE, "..", "pricing.json");
+
+/** Where a downloaded table is kept (see pricing-update.ts). */
+export function pricingCachePath(runtime: AgentRuntime): string {
+  return join(stateDir(runtime), "pricing.json");
+}
+
+/**
+ * Whether a newer downloaded table may stand in for the bundled one. On by default; off with
+ * `CAT_OTEL_PRICING_UPDATE=0`, and off whenever `CAT_OTEL_PRICING_FILE` pins a table, which
+ * an operator chose deliberately and nothing should replace.
+ */
+export function pricingUpdatesEnabled(): boolean {
+  return !process.env["CAT_OTEL_PRICING_FILE"] && flag("CAT_OTEL_PRICING_UPDATE", true);
 }
 
 /** How old a rate table may get before the debug log points it out. */
@@ -118,33 +132,159 @@ function warnIfStale(path: string, asOf: string | undefined): void {
   }
 }
 
-export function loadPricing(): Pricing {
-  const failures: string[] = [];
-  for (const path of pricingCandidates()) {
-    let data: unknown;
-    try {
-      data = JSON.parse(readFileSync(path, "utf8"));
-    } catch (error) {
-      failures.push(`${path} (${String(error)})`);
-      continue;
-    }
-    if (!data || typeof data !== "object") {
-      failures.push(`${path} (not an object)`);
-      continue;
-    }
-    const table = data as Partial<Pricing>;
-    const as_of = typeof table.as_of === "string" ? table.as_of : undefined;
-    warnIfStale(path, as_of);
-    return {
-      currency: table.currency || "USD",
-      default: table.default || FALLBACK_PRICING.default,
-      per_million_tokens: table.per_million_tokens || {},
-      ...(as_of === undefined ? {} : { as_of }),
-    };
+/** A table as read from disk, normalized leniently: a hand-written table may omit fields. */
+function normalized(data: unknown): Pricing | string {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return "not an object";
   }
-  // Still report tokens even when the rate table cannot be read.
-  debug(`pricing load failed, using fallback rates: ${failures.join(", ")}`);
-  return { ...FALLBACK_PRICING };
+  const table = data as Partial<Pricing>;
+  const as_of = typeof table.as_of === "string" ? table.as_of : undefined;
+  return {
+    currency: table.currency || "USD",
+    default: table.default || FALLBACK_PRICING.default,
+    per_million_tokens: table.per_million_tokens || {},
+    ...(as_of === undefined ? {} : { as_of }),
+  };
+}
+
+function readTable(path: string): Pricing | string {
+  let data: unknown;
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    return String(error);
+  }
+  return normalized(data);
+}
+
+const RATE_KEYS = new Set([
+  "input",
+  "cached_input",
+  "cache_creation",
+  "cache_creation_5m",
+  "cache_creation_1h",
+  "output",
+]);
+
+/** Why `value` is not a valid rate set, or null. `tier` is which rate set it is. */
+function rateProblem(value: unknown, tier: "base" | "long_context" | "fast"): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "not an object";
+  }
+  for (const [key, rate] of Object.entries(value as Record<string, unknown>)) {
+    if (RATE_KEYS.has(key) || (tier === "long_context" && key === "above_input_tokens")) {
+      if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0) {
+        return `${key} is not a non-negative number`;
+      }
+    } else if (tier === "base" && (key === "long_context" || key === "fast")) {
+      const problem = rateProblem(rate, key);
+      if (problem) {
+        return `${key}: ${problem}`;
+      }
+      if (key === "long_context" && !((rate as Record<string, unknown>)["above_input_tokens"] as number > 0)) {
+        return "long_context: above_input_tokens is missing";
+      }
+    } else {
+      // A field this code does not know might change the price; ignoring it would misprice.
+      return `unknown field ${key}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Validates a table from outside the install (a download) strictly, returning why it is
+ * unusable or null. The bundled table and a `CAT_OTEL_PRICING_FILE` are trusted as written;
+ * a download replaces them without anyone looking, so every rate must check out.
+ */
+export function pricingProblem(data: unknown): string | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return "not an object";
+  }
+  const table = data as Record<string, unknown>;
+  if (table["schema"] !== PRICING_SCHEMA) {
+    return `schema ${JSON.stringify(table["schema"])} is not ${PRICING_SCHEMA}`;
+  }
+  const asOf = table["as_of"];
+  if (typeof asOf !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(asOf) || Number.isNaN(Date.parse(asOf))) {
+    return "as_of is not a YYYY-MM-DD date";
+  }
+  if (table["currency"] !== undefined && (typeof table["currency"] !== "string" || !table["currency"])) {
+    return "currency is not a string";
+  }
+  const defaults = rateProblem(table["default"], "base");
+  if (defaults) {
+    return `default: ${defaults}`;
+  }
+  const models = table["per_million_tokens"];
+  if (!models || typeof models !== "object" || Array.isArray(models)) {
+    return "per_million_tokens is not an object";
+  }
+  const entries = Object.entries(models as Record<string, unknown>);
+  if (entries.length === 0) {
+    return "per_million_tokens is empty";
+  }
+  for (const [model, rates] of entries) {
+    const problem = rateProblem(rates, "base");
+    if (problem) {
+      return `${model}: ${problem}`;
+    }
+  }
+  return null;
+}
+
+/** The downloaded table, if there is one and it passes {@link pricingProblem}. */
+export function cachedPricing(runtime: AgentRuntime): Pricing | null {
+  const path = pricingCachePath(runtime);
+  let data: unknown;
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+  const problem = pricingProblem(data);
+  if (problem) {
+    debug(`pricing download ignored (${path}): ${problem}`, runtime);
+    return null;
+  }
+  const table = normalized(data);
+  return typeof table === "string" ? null : table;
+}
+
+/** The table shipped with the code, ignoring any override or download. */
+export function bundledPricing(): Pricing {
+  const table = readTable(BUNDLED_PATH);
+  if (typeof table === "string") {
+    // Still report tokens even when the rate table cannot be read.
+    debug(`pricing load failed, using fallback rates: ${BUNDLED_PATH} (${table})`);
+    return { ...FALLBACK_PRICING };
+  }
+  return table;
+}
+
+/**
+ * The rate table to price with: `CAT_OTEL_PRICING_FILE` when set; otherwise the bundled table,
+ * or a downloaded one (pricing-update.ts) when its `as_of` is newer.
+ */
+export function loadPricing(runtime: AgentRuntime = "codex"): Pricing {
+  const override = process.env["CAT_OTEL_PRICING_FILE"];
+  if (override) {
+    const table = readTable(override);
+    if (typeof table === "string") {
+      debug(`pricing load failed, using fallback rates: ${override} (${table})`, runtime);
+      return { ...FALLBACK_PRICING };
+    }
+    warnIfStale(override, table.as_of);
+    return table;
+  }
+  const bundled = bundledPricing();
+  const downloaded = pricingUpdatesEnabled() ? cachedPricing(runtime) : null;
+  if (downloaded?.as_of && downloaded.as_of > (bundled.as_of ?? "")) {
+    warnIfStale(pricingCachePath(runtime), downloaded.as_of);
+    return downloaded;
+  }
+  warnIfStale(BUNDLED_PATH, bundled.as_of);
+  return bundled;
 }
 
 /**

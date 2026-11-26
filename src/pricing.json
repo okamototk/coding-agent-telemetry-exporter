@@ -18,8 +18,12 @@
     "threshold is checked per request, counting cache reads and writes.",
     "fast replaces them for a Claude request served in fast mode (usage.speed 'fast', or a",
     "'-fast' model id); a fast request on a model without it reports pricing_matched=false.",
+    "schema: bump it when a field that changes the price is added, so an older hook that",
+    "would ignore the field refuses the downloaded table instead of mispricing with it.",
+    "The hook fetches this file from main once a day and uses it when as_of is newer.",
     "Rates change: in production, point CAT_OTEL_PRICING_FILE at your own table."
   ],
+  "schema": 1,
   "as_of": "2026-11-26",
   "currency": "USD",
   "default": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },

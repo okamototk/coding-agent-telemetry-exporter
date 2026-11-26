@@ -574,11 +574,14 @@ Settings use one `CAT_OTEL_*` namespace across every supported agent.
 | `CAT_OTEL_METRICS` | `1` | `0` sends no metrics (traces only) |
 | `CAT_OTEL_METRICS_ENDPOINT` | same as `CAT_OTEL_ENDPOINT` | Send metrics to a separate destination. A **full** URL — see below. Also reads `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` |
 | `CAT_OTEL_HEADERS` | — | `k=v,k2=v2`, values percent-encoded — see below. Also reads `OTEL_EXPORTER_OTLP_HEADERS` |
-| `CAT_OTEL_TIMEOUT` | `3` | POST timeout in seconds |
+| `CAT_OTEL_TIMEOUT` | `3` | POST timeout in seconds (also the rate-table download's) |
 | `CAT_OTEL_SERVICE_NAME` | per runtime | `codex`, `claude-code`, or `kiro-cli` |
 | `CAT_OTEL_RESOURCE_ATTRIBUTES` | — | Extra resource attributes |
 | `CAT_OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES` | `1` | `0` stops copying those attributes onto the metric data points (they stay on the resource). Also reads `OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES` |
-| `CAT_OTEL_PRICING_FILE` | the bundled `pricing.json` | Rate table |
+| `CAT_OTEL_PRICING_FILE` | the bundled `pricing.json` | Rate table. Setting it also turns off the automatic update below |
+| `CAT_OTEL_PRICING_UPDATE` | `1` | `0` keeps the bundled rate table: no download, and none used from earlier (see "Automatic rate-table updates") |
+| `CAT_OTEL_PRICING_UPDATE_HOURS` | `24` | How often to check for a newer rate table |
+| `CAT_OTEL_PRICING_URL` | `src/pricing.json` on `main`, via `raw.githubusercontent.com` | Where to fetch the rate table from, e.g. your fork or an internal mirror |
 | `CAT_OTEL_COST_SEMCONV` | `1` | `0` stops emitting the `gen_ai.usage.cost.*` attributes and the `gen_ai.client.operation.cost` metric of the unmerged [PR #443](https://github.com/open-telemetry/semantic-conventions-genai/pull/443). The `codex.*` / `claude.*` cost extensions are emitted either way |
 | `CAT_OTEL_COST_BREAKDOWN` | `0` | `1` adds the per-class breakdown of [issue #484](https://github.com/open-telemetry/semantic-conventions-genai/issues/484) (`gen_ai.usage.cost.input` / `.output` / `.cache_read` / `.cache_write`), whose class list is still an open discussion |
 | `CAT_OTEL_CAPTURE_PROMPTS` | `0` | `1` puts prompt and response content on the spans |
@@ -742,6 +745,31 @@ signal on its own. **In production, point `CAT_OTEL_PRICING_FILE` at your own or
 table.** On a flat-rate plan (ChatGPT authentication, a Claude subscription) these figures are
 the API-rate equivalent, not what you are actually billed.
 
+### Automatic rate-table updates
+
+Rates change more often than a hook gets reinstalled, so the hook keeps its table current from
+this repository. At most once every `CAT_OTEL_PRICING_UPDATE_HOURS` (default 24), it fetches
+`src/pricing.json` from `main`, in parallel with the OTLP export so the event is not delayed,
+and keeps it as `pricing.json` in the state directory. A download is used **only when**:
+
+- its `as_of` is newer than the bundled table's, so upgrading the hook never leaves you on an
+  older download;
+- its `schema` is the one this version of the hook understands. `schema` is bumped whenever a
+  field that changes a price is added, so an older hook keeps its own table rather than
+  ignoring the new field and mispricing;
+- every rate is a non-negative number and no field is unknown. A truncated, HTML, or
+  otherwise malformed response is discarded.
+
+The new table applies from the next event. The request is a plain GET with a generic
+User-Agent and `If-None-Match`, carrying nothing about you or your sessions. A failed check is
+not retried until the next interval, and it never affects the hook: the table already in use
+stays. With `CAT_OTEL_DEBUG=1`, `hook.log` records each update or rejection.
+
+Turn it off with `CAT_OTEL_PRICING_UPDATE=0`. It is also off whenever `CAT_OTEL_PRICING_FILE`
+is set, since an operator who pins a table means to keep it. To serve your own rates to every
+machine, point `CAT_OTEL_PRICING_URL` at a copy you maintain instead. Rates in a table you
+publish this way must follow the same `schema`.
+
 ---
 
 ## 6. Collector side
@@ -856,12 +884,14 @@ Source layout:
 src/otel-genai-hook.ts              Entry point: event handlers and span assembly
 src/pricing.json                    Bundled rate table (copied into dist/ by the build)
 src/*-hook.test.ts                  End-to-end tests per agent (codex / claude / kiro)
+src/hook-flow.test.ts               End-to-end tests across events (SessionStart re-reads, fast mode)
 src/core/env.ts                     Environment variables, state directory, debug log
 src/core/time.ts                    Converting between ns timestamps and ISO 8601
 src/core/types.ts                   Types for the payload, state, and usage
 src/core/ids.ts                     Deterministic derivation of trace / span IDs
 src/core/state.ts                   Reading and writing session state (atomic rename)
 src/core/pricing.ts                 Rate table and cost calculation
+src/core/pricing-update.ts          Fetching a newer rate table from main (daily, validated, opt-out)
 src/otel/otlp.ts                    Assembling and POSTing OTLP/HTTP (JSON)
 src/otel/spans.ts                   Mapping onto the GenAI semconv (routing attributes and trace events)
 src/otel/metrics.ts                 Aggregating and sending the GenAI semconv metrics (delta histograms)
